@@ -20,6 +20,7 @@ import {
 	harnessQueryTerms,
 	inferRefinementResultScope,
 	loadGlobalRefinementHistory,
+	normalizeRefinementProposal,
 	loadHarnessState,
 	mergeHarnessStates,
 	mergeRefinementHistory,
@@ -853,6 +854,106 @@ describe("global refinement history", () => {
 		expect(rollback).toMatchObject({ rollbackOf: "refine_session_a", scope: "local" });
 		expect(sessionBState.entries.memory.session_a_memory).toBeUndefined();
 	});
+
+	it("resolves update id from target property or rationale when id is omitted", () => {
+		const state = loadHarnessState(makeTempDir());
+		applyRefinementProposal(
+			state,
+			proposal("Initial create", [
+				{
+					action: "create",
+					kind: "memory",
+					id: "manualbook_recheck_inflight",
+					title: "Manual-book audit v8",
+					content: "Status v8",
+				},
+			]),
+			{ id: "refine_init" },
+		);
+
+		// 1. Model put id in rationale
+		const prop1 = normalizeRefinementProposal({
+			summary: "Refined state",
+			rationale: "Update manualbook_recheck_inflight to v9 recording the completed full-suite capture",
+			edits: [
+				{
+					action: "update",
+					kind: "memory",
+					title: "Manual-book audit v9",
+					content: "Status v9 verified",
+				},
+			],
+		});
+		const result1 = applyRefinementProposal(state, prop1, { id: "refine_rat_match" });
+		expect(result1.appliedEdits[0]).toMatchObject({
+			action: "update",
+			kind: "memory",
+			id: "manualbook_recheck_inflight",
+			applied: true,
+		});
+		expect(state.entries.memory.manualbook_recheck_inflight.content).toBe("Status v9 verified");
+
+		// 2. Model put id in target property
+		const prop2 = normalizeRefinementProposal({
+			edits: [
+				{
+					action: "update",
+					kind: "memory",
+					target: "manualbook_recheck_inflight",
+					title: "Manual-book audit v10",
+					content: "Status v10 verified",
+				},
+			],
+		});
+		const result2 = applyRefinementProposal(state, prop2, { id: "refine_target_match" });
+		expect(result2.appliedEdits[0]).toMatchObject({
+			action: "update",
+			kind: "memory",
+			id: "manualbook_recheck_inflight",
+			applied: true,
+		});
+
+		// 3. Model wrote update with backtick ID in reason
+		const prop3 = normalizeRefinementProposal({
+			edits: [
+				{
+					action: "update",
+					kind: "memory",
+					reason: "Updating `manualbook_recheck_inflight` with latest verification findings",
+					title: "Manual-book audit v11",
+					content: "Status v11 verified",
+				},
+			],
+		});
+		const result3 = applyRefinementProposal(state, prop3, { id: "refine_reason_backtick_match" });
+		expect(result3.appliedEdits[0]).toMatchObject({
+			action: "update",
+			kind: "memory",
+			id: "manualbook_recheck_inflight",
+			applied: true,
+		});
+		expect(state.entries.memory.manualbook_recheck_inflight.content).toBe("Status v11 verified");
+
+		// 4. Model put bracket prefix in title
+		const prop4 = normalizeRefinementProposal({
+			edits: [
+				{
+					action: "update",
+					kind: "memory",
+					title: "[local:manualbook_recheck_inflight] Manual-book audit v12",
+					content: "Status v12 verified",
+				},
+			],
+		});
+		const result4 = applyRefinementProposal(state, prop4, { id: "refine_title_bracket_match" });
+		expect(result4.appliedEdits[0]).toMatchObject({
+			action: "update",
+			kind: "memory",
+			id: "manualbook_recheck_inflight",
+			applied: true,
+		});
+		expect(state.entries.memory.manualbook_recheck_inflight.content).toBe("Status v12 verified");
+	});
 });
 
 describe("harness digest relevance ranking", () => {
@@ -935,11 +1036,11 @@ describe("harness digest relevance ranking", () => {
 			},
 		},
 		{
-			// Equal discounts keep the recency tie-break: alphabetical order would pick aa_older.
-			label: "recency as the tie-break for equal scores",
+			// Equal scores tie on stable identifier order ([path, title, id]) for prompt-cache reuse.
+			label: "stable identifier order as the tie-break for equal scores",
 			query: "worktree",
-			winner: "zz_newer",
-			loser: "aa_older",
+			winner: "aa_older",
+			loser: "zz_newer",
 			entries: {
 				aa_older: makeEntry("aa_older", "Worktree policy", "Same worktree signal.", "2026-08-01T00:00:00.000Z"),
 				zz_newer: makeEntry("zz_newer", "Worktree policy", "Same worktree signal.", "2026-09-01T00:00:00.000Z"),

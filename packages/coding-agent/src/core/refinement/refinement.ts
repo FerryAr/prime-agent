@@ -147,6 +147,7 @@ Scope and persistence policy:
 - The default editable continual harness store is local to the current Prime Agent session. Use it for session-specific progress, active task state, current-run coordination notes, temporary blockers, and project facts that should not affect other sessions.
 - A caller may explicitly request global refinement. Global edits must be stable cross-session lessons, durable user preferences, reusable skills/subagents, or tool/environment facts that should affect future sessions.
 - Entry ids in the harness overview may carry a display-only \`local:\` or \`global:\` prefix. Always use the bare id (no prefix) in edits.
+- For update and delete actions, you MUST include the exact \`id\` field of the target entry from <current_harness_state> (e.g. \`"id": "local_pi_web_mvp_state"\`). Never omit the \`id\` field on update or delete edits.
 - All edits in one refinement apply only to the requested scope's store. During a local refinement, global entries are read-only context: never propose update or delete edits for them; create a local entry instead when a session-specific override is genuinely needed.
 - Project/workspace-specific lessons may be persisted globally only when the title, path, or content explicitly names the project/workspace and the lesson is likely to be reused in future sessions for that project. Prefer local edits when the lesson only belongs in the current conversation.
 - Use memory for declarative facts and preferences, skill for repeatable procedures exposed as Python calls, prompt for narrow behavioral policy addendums, and subagent for reusable delegation roles.
@@ -860,74 +861,331 @@ function parseJsonCandidate(candidate: string): unknown {
 
 function extractJsonObject(text: string): unknown {
 	const trimmed = text.trim();
-	if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
-		// A reply truncated after a nested closing brace still looks well-formed
-		// here, so this path needs the same diagnosis as the slicing fallback.
+	if (
+		(trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+		(trimmed.startsWith("[") && trimmed.endsWith("]"))
+	) {
 		return parseJsonCandidate(trimmed);
 	}
 	const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
 	if (fenced) {
 		return parseJsonCandidate(fenced[1].trim());
 	}
-	// Brace slicing recovers JSON wrapped in prose. On a reply truncated inside the
-	// edits array it slices to an earlier edit's closing brace, so a failure here
-	// is diagnosed against the original text rather than the balanced fragment.
-	const start = trimmed.indexOf("{");
-	const end = trimmed.lastIndexOf("}");
-	if (start !== -1 && end > start) {
+	const startBrace = trimmed.indexOf("{");
+	const endBrace = trimmed.lastIndexOf("}");
+	const startBracket = trimmed.indexOf("[");
+	const endBracket = trimmed.lastIndexOf("]");
+
+	if (startBracket !== -1 && endBracket > startBracket && (startBrace === -1 || startBracket < startBrace)) {
 		try {
-			return JSON.parse(trimmed.slice(start, end + 1));
+			return JSON.parse(trimmed.slice(startBracket, endBracket + 1));
 		} catch {
-			return parseJsonCandidate(trimmed.slice(start));
+			return parseJsonCandidate(trimmed.slice(startBracket));
+		}
+	}
+	if (startBrace !== -1 && endBrace > startBrace) {
+		try {
+			return JSON.parse(trimmed.slice(startBrace, endBrace + 1));
+		} catch {
+			return parseJsonCandidate(trimmed.slice(startBrace));
 		}
 	}
 	if (isIncompleteJson(trimmed)) {
 		throw new Error(TRUNCATED_JSON_ERROR);
 	}
-	throw new Error("Refiner did not return a JSON object");
+	throw new Error("Refiner did not return a JSON object or array");
 }
 
 /**
  * Normalizes an untrusted refinement proposal while preserving invalid edit
  * fields for apply-time validation.
  */
+function normalizeAction(raw: unknown): RefinementAction {
+	if (typeof raw !== "string") return "create";
+	const lower = raw.trim().toLowerCase();
+	if (lower === "add" || lower === "insert" || lower === "new" || lower === "create" || lower === "make" || lower === "append") return "create";
+	if (lower === "edit" || lower === "modify" || lower === "patch" || lower === "update" || lower === "change" || lower === "put" || lower === "set") return "update";
+	if (lower === "remove" || lower === "del" || lower === "delete" || lower === "drop" || lower === "rm" || lower === "clear") return "delete";
+	return lower as RefinementAction;
+}
+
+function extractAction(edit: Record<string, unknown>): RefinementAction {
+	const raw = edit.action ?? (edit as any).op ?? (edit as any).operation ?? (edit as any).verb ?? (edit as any).command;
+	return normalizeAction(raw);
+}
+
+function normalizeKind(raw: unknown): { kind: RefinementKind; suggestedPath?: string } {
+	if (typeof raw !== "string") return { kind: "memory" };
+	const lower = raw.trim().toLowerCase();
+	if (lower === "prompts" || lower === "prompt" || lower === "instruction" || lower === "policy" || lower === "rule" || lower === "rules" || lower === "system") {
+		return { kind: "prompt" };
+	}
+	if (lower === "skills" || lower === "skill" || lower === "tool" || lower === "tools" || lower === "function" || lower === "functions") {
+		return { kind: "skill" };
+	}
+	if (lower === "subagents" || lower === "subagent" || lower === "agent" || lower === "agents") {
+		return { kind: "subagent" };
+	}
+	if (lower === "memories" || lower === "memory" || lower === "facts" || lower === "knowledge") {
+		return { kind: "memory" };
+	}
+	// Models often output categories like "general", "fact", "decision", "lesson", "preference" as the kind
+	return { kind: "memory", suggestedPath: lower };
+}
+
+function extractId(edit: Record<string, unknown>, contextText?: string): string | undefined {
+	const raw =
+		edit.id ??
+		(edit as any).name ??
+		(edit as any).key ??
+		(edit as any).slug ??
+		(edit as any).identifier ??
+		(edit as any).target ??
+		(edit as any).entry ??
+		(edit as any).entryId ??
+		(edit as any).entry_id ??
+		(edit as any).targetId ??
+		(edit as any).target_id ??
+		(edit as any).itemId ??
+		(edit as any).item_id ??
+		(edit as any).item ??
+		(edit as any).ref ??
+		(typeof (edit as any).reference === "string" ? (edit as any).reference : undefined) ??
+		(edit as any).originalId ??
+		(edit as any).original_id ??
+		(edit as any).existingId ??
+		(edit as any).existing_id ??
+		(edit as any).sourceId ??
+		(edit as any).source_id;
+
+	let idCandidate: string | undefined;
+
+	if (typeof raw === "string") {
+		idCandidate = raw;
+	} else if (typeof raw === "object" && raw !== null) {
+		idCandidate = (raw as any).id ?? (raw as any).name ?? (raw as any).key ?? (raw as any).slug;
+	}
+
+	// Nested entry or target objects
+	if (!idCandidate && typeof (edit as any).entry === "object" && (edit as any).entry !== null) {
+		idCandidate = (edit as any).entry.id ?? (edit as any).entry.name ?? (edit as any).entry.key;
+	}
+	if (!idCandidate && typeof (edit as any).target === "object" && (edit as any).target !== null) {
+		idCandidate = (edit as any).target.id ?? (edit as any).target.name ?? (edit as any).target.key;
+	}
+
+	// Check if path was used as a bare snake_case ID
+	if (!idCandidate && typeof edit.path === "string") {
+		const p = edit.path.trim();
+		if (p && !p.includes("/") && /^[a-zA-Z0-9_-]+$/.test(p)) {
+			if (p.includes("_") || p.startsWith("local:") || p.startsWith("global:")) {
+				idCandidate = p;
+			}
+		}
+	}
+
+	// Check title for [local:xxx] or (local:xxx) or [global:xxx] or (global:xxx)
+	if (!idCandidate && typeof edit.title === "string") {
+		const match = edit.title.match(/[\[\(](?:local|global):([a-zA-Z0-9_-]+)[\]\)]/);
+		if (match) idCandidate = match[1];
+	}
+
+	// Check content for [local:xxx] or (local:xxx) in first 200 chars
+	if (!idCandidate && typeof (edit as any).content === "string") {
+		const match = ((edit as any).content as string).slice(0, 200).match(/[\[\(](?:local|global):([a-zA-Z0-9_-]+)[\]\)]/);
+		if (match) idCandidate = match[1];
+	}
+
+	// Improved regex that matches identifiers enclosed in backticks, brackets, bold, quotes
+	const actionMentionRegex = /(?:update|updating|modify|modifying|patch|patching|delete|deleting|remove|removing|refine|refining)\s+(?:the\s+)?(?:entry\s+|memory\s+|prompt\s+|skill\s+|subagent\s+)?[\`\[\*\"]*(?:local:|global:)?([a-zA-Z0-9_-]{3,60})[\`\]\*\"]*/i;
+	const ignoredWords = new Set(["the", "a", "an", "this", "that", "entry", "entries", "memory", "memories", "prompt", "prompts", "skill", "skills", "subagent", "subagents", "to", "from", "harness", "continual", "state", "with", "for", "and"]);
+
+	// Check edit reason / notes / explanation / rationale
+	if (!idCandidate) {
+		const candidateTexts = [(edit as any).reason, (edit as any).notes, (edit as any).explanation, (edit as any).rationale];
+		for (const ct of candidateTexts) {
+			if (typeof ct === "string") {
+				const match = ct.match(actionMentionRegex);
+				if (match && !ignoredWords.has(match[1].toLowerCase())) {
+					idCandidate = match[1];
+					break;
+				}
+			}
+		}
+	}
+
+	// Check proposal summary / rationale context text
+	if (!idCandidate && typeof contextText === "string" && contextText.trim().length > 0) {
+		const match = contextText.match(actionMentionRegex);
+		if (match && !ignoredWords.has(match[1].toLowerCase())) {
+			idCandidate = match[1];
+		}
+	}
+
+	if (typeof idCandidate !== "string") return undefined;
+	const trimmed = idCandidate.trim();
+	if (!trimmed) return undefined;
+	if (trimmed.startsWith("local:")) return trimmed.slice(6).trim();
+	if (trimmed.startsWith("global:")) return trimmed.slice(7).trim();
+	return trimmed;
+}
+
+function extractTitle(edit: Record<string, unknown>): string | undefined {
+	const candidates = [
+		edit.title,
+		(edit as any).header,
+		(edit as any).subject,
+		(edit as any).label,
+		(edit as any).heading,
+	];
+	for (const candidate of candidates) {
+		if (typeof candidate === "string" && candidate.trim().length > 0) {
+			return candidate.trim();
+		}
+	}
+	if (typeof (edit as any).name === "string" && (edit as any).name.trim().length > 0 && edit.id && (edit as any).name !== edit.id) {
+		return (edit as any).name.trim();
+	}
+	return undefined;
+}
+
+function extractContent(edit: Record<string, unknown>): string | undefined {
+	const candidates = [
+		edit.content,
+		(edit as any).value,
+		(edit as any).text,
+		(edit as any).body,
+		(edit as any).description,
+		(edit as any).desc,
+		(edit as any).note,
+		(edit as any).notes,
+		(edit as any).details,
+		(edit as any).detail,
+		(edit as any).data,
+		(edit as any).instruction,
+		(edit as any).instructions,
+		(edit as any).rule,
+		(edit as any).rules,
+		(edit as any).statement,
+		(edit as any).memory,
+		(edit as any).prompt,
+	];
+	for (const candidate of candidates) {
+		if (typeof candidate === "string" && candidate.trim().length > 0) {
+			return candidate.trim();
+		}
+		if (Array.isArray(candidate) && candidate.length > 0) {
+			const joined = candidate
+				.map((item) => (typeof item === "string" ? item : JSON.stringify(item)))
+				.join("\n")
+				.trim();
+			if (joined.length > 0) return joined;
+		}
+		if (typeof candidate === "object" && candidate !== null) {
+			const inner = (candidate as any).text ?? (candidate as any).content ?? (candidate as any).value;
+			if (typeof inner === "string" && inner.trim().length > 0) {
+				return inner.trim();
+			}
+			try {
+				const str = JSON.stringify(candidate, null, 2);
+				if (str && str !== "{}") return str;
+			} catch {}
+		}
+	}
+	return undefined;
+}
+
+function deriveTitle(rawTitle: unknown, content: unknown, id: unknown, kind: RefinementKind): string {
+	if (typeof rawTitle === "string" && rawTitle.trim().length > 0) return rawTitle.trim();
+	if (typeof id === "string" && id.trim().length > 0) return id.trim().replace(/_/g, " ");
+	if (typeof content === "string" && content.trim().length > 0) {
+		const firstLine = content.trim().split("\n")[0].replace(/^[#*\-\s]+/, "").trim();
+		if (firstLine.length > 0) return firstLine.slice(0, 60);
+	}
+	return `${kind} item`;
+}
+
 export function normalizeRefinementProposal(value: unknown): RefinementProposal {
 	const record =
 		typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
-	const edits = Array.isArray(record.edits) ? record.edits : [];
+	const rawEdits =
+		Array.isArray(record.edits) ? record.edits :
+		Array.isArray((record as any).changes) ? (record as any).changes :
+		Array.isArray((record as any).items) ? (record as any).items :
+		Array.isArray((record as any).entries) ? (record as any).entries :
+		Array.isArray((record as any).proposals) ? (record as any).proposals :
+		[];
+	const summary = typeof record.summary === "string" ? record.summary : "Refined continual harness state";
+	const rationale =
+		typeof record.rationale === "string"
+			? record.rationale
+			: typeof (record as any).reason === "string"
+				? (record as any).reason
+				: "";
+
 	return {
-		summary: typeof record.summary === "string" ? record.summary : "Refined continual harness state",
-		rationale: typeof record.rationale === "string" ? record.rationale : "",
-		expectedOutcome: typeof record.expectedOutcome === "string" ? record.expectedOutcome : "",
-		edits: edits
-			.filter((edit): edit is Record<string, unknown> => typeof edit === "object" && edit !== null)
-			.map((edit) => ({
-				action: edit.action as RefinementAction,
-				kind: edit.kind as RefinementKind,
-				id: typeof edit.id === "string" ? edit.id : undefined,
-				title: typeof edit.title === "string" ? edit.title : undefined,
-				content: typeof edit.content === "string" ? edit.content : undefined,
-				path: typeof edit.path === "string" ? edit.path : undefined,
-				reference: objectRecord(edit.reference),
-				arguments: objectRecord(edit.arguments),
-				metadata:
-					typeof edit.metadata === "object" && edit.metadata !== null && !Array.isArray(edit.metadata)
-						? (edit.metadata as Record<string, unknown>)
-						: undefined,
-				reason: typeof edit.reason === "string" ? edit.reason : undefined,
-			})),
+		summary,
+		rationale,
+		expectedOutcome:
+			typeof record.expectedOutcome === "string"
+				? record.expectedOutcome
+				: typeof (record as any).outcome === "string"
+					? (record as any).outcome
+					: "",
+		edits: rawEdits
+			.filter((edit: unknown): edit is Record<string, unknown> => typeof edit === "object" && edit !== null)
+			.map((edit: Record<string, unknown>) => {
+				const action = extractAction(edit);
+				const rawKind = edit.kind ?? (edit as any).layer ?? (edit as any).type ?? (edit as any).component ?? (edit as any).category;
+				const { kind, suggestedPath } = normalizeKind(rawKind);
+				const contextText = `${summary} ${rationale}`.trim() || undefined;
+				const rawId = extractId(edit, contextText);
+				const rawTitle = extractTitle(edit);
+				const content = extractContent(edit);
+				const title = deriveTitle(rawTitle, content, rawId, kind);
+
+				return {
+					action,
+					kind,
+					id: rawId,
+					title,
+					content,
+					path: typeof edit.path === "string" ? edit.path : suggestedPath,
+					reference: objectRecord(edit.reference),
+					arguments: objectRecord(edit.arguments),
+					metadata:
+						typeof edit.metadata === "object" && edit.metadata !== null && !Array.isArray(edit.metadata)
+							? (edit.metadata as Record<string, unknown>)
+							: undefined,
+					reason: typeof edit.reason === "string" ? edit.reason : undefined,
+				};
+			}),
 	};
 }
 
 function parseProposal(text: string): RefinementProposal {
 	const value = extractJsonObject(text);
-	if (typeof value !== "object" || value === null || Array.isArray(value)) {
-		throw new Error("Refiner JSON must be an object");
+	if (Array.isArray(value)) {
+		return normalizeRefinementProposal({ edits: value });
+	}
+	if (typeof value !== "object" || value === null) {
+		throw new Error("Refiner JSON must be an object or array");
+	}
+	const rec = value as Record<string, unknown>;
+	if (
+		!Array.isArray(rec.edits) &&
+		!Array.isArray((rec as any).changes) &&
+		!Array.isArray((rec as any).items) &&
+		!Array.isArray((rec as any).entries) &&
+		!Array.isArray((rec as any).proposals) &&
+		Boolean(rec.action || (rec as any).op || (rec as any).operation || rec.content || (rec as any).value || (rec as any).text || (rec as any).component || rec.kind || (rec as any).name || (rec as any).key)
+	) {
+		return normalizeRefinementProposal({ edits: [rec] });
 	}
 	return normalizeRefinementProposal(value);
 }
 
-function validateEdit(edit: RefinementEdit, computedId?: string): string | undefined {
+function validateEdit(edit: RefinementEdit, computedId?: string, beforeEntry?: HarnessEntry): string | undefined {
 	if (!["create", "update", "delete"].includes(edit.action)) {
 		return `unsupported action ${String(edit.action)}`;
 	}
@@ -978,71 +1236,177 @@ export function applyRefinementProposal(
 	const appliedEdits: AppliedRefinementEdit[] = [];
 	const proposalModifiedKeys = new Set<string>();
 	for (const edit of proposal.edits) {
-		const computedId = edit.id ?? (edit.action === "create" ? slug(edit.title ?? edit.kind, edit.kind) : undefined);
-		const id = computedId ?? "";
-		const validationError = validateEdit(edit, id);
-		if (validationError) {
-			appliedEdits.push({ ...edit, id, applied: false, error: validationError });
-			continue;
+		let currentAction = edit.action;
+		let id = edit.id ?? (currentAction === "create" ? slug(edit.title ?? edit.kind, edit.kind) : undefined);
+		const records = state.entries[edit.kind];
+
+		// If action is update/delete but no ID was extracted, attempt smart resolution against state records
+		if (!id && currentAction !== "create") {
+			if (records && Object.keys(records).length > 0) {
+				const recordKeys = Object.keys(records);
+				const normTitle = (edit.title || "").toLowerCase();
+				const normContent = (edit.content || "").toLowerCase();
+
+				// 1. Check if an existing entry ID appears in edit.title or edit.content
+				let matchedKey: string | undefined;
+				for (const key of recordKeys) {
+					const kNorm = key.toLowerCase();
+					const kWords = kNorm.replace(/[^a-z0-9]/g, " ").split(" ").filter((w) => w.length >= 3);
+					if (normTitle.includes(kNorm) || normContent.includes(kNorm)) {
+						matchedKey = key;
+						break;
+					}
+					// Also check if entry title is contained in edit.title
+					const existingTitle = (records[key]?.title || "").toLowerCase();
+					if (existingTitle && (normTitle.includes(existingTitle) || existingTitle.includes(normTitle))) {
+						matchedKey = key;
+						break;
+					}
+					// Check for word overlap with key parts
+					const titleWords = new Set(normTitle.replace(/[^a-z0-9]/g, " ").split(" ").filter((w) => w.length >= 3));
+					const overlap = kWords.filter((w) => titleWords.has(w));
+					if (overlap.length >= 2) {
+						matchedKey = key;
+						break;
+					}
+				}
+
+				// 2. Check title prefix before version/colon/parenthesis (e.g. "pi-web build state", "manual-book audit")
+				if (!matchedKey && edit.title) {
+					const getTitlePrefix = (t: string): string => {
+						const clean = t.replace(/^[\[\(].*?[\]\)]\s*/, "");
+						const m = /^(.*?)(?:\s+v\d+|\s*:\s*|\s*\()/i.exec(clean);
+						const p = m ? m[1].trim() : clean.trim();
+						return p.toLowerCase().replace(/[^a-z0-9]/g, " ").trim();
+					};
+					const editPrefix = getTitlePrefix(edit.title);
+					if (editPrefix.length >= 5) {
+						for (const key of recordKeys) {
+							const entryPrefix = getTitlePrefix(records[key]?.title || "");
+							if (entryPrefix.length >= 5 && (editPrefix === entryPrefix || editPrefix.includes(entryPrefix) || entryPrefix.includes(editPrefix))) {
+								matchedKey = key;
+								break;
+							}
+						}
+					}
+				}
+
+				// 3. Check significant word overlap between edit title and existing entry title (>= 3 words)
+				if (!matchedKey && edit.title) {
+					const stopWords = new Set(["for", "and", "the", "with", "from", "state", "into", "that", "this"]);
+					const editWords = new Set(
+						normTitle
+							.replace(/[^a-z0-9]/g, " ")
+							.split(" ")
+							.filter((w) => w.length >= 3 && !stopWords.has(w)),
+					);
+					let bestOverlap = 0;
+					for (const key of recordKeys) {
+						const entryTitle = (records[key]?.title || "").toLowerCase();
+						const entryWords = entryTitle
+							.replace(/[^a-z0-9]/g, " ")
+							.split(" ")
+							.filter((w) => w.length >= 3 && !stopWords.has(w));
+						const overlap = entryWords.filter((w) => editWords.has(w)).length;
+						if (overlap >= 3 && overlap > bestOverlap) {
+							bestOverlap = overlap;
+							matchedKey = key;
+						}
+					}
+				}
+
+				// 4. Check unique path match
+				if (!matchedKey && edit.path) {
+					const pathMatches = recordKeys.filter((key) => records[key]?.path === edit.path);
+					if (pathMatches.length === 1) {
+						matchedKey = pathMatches[0];
+					}
+				}
+
+				// 5. Check if slug of edit.title matches an existing entry
+				if (!matchedKey && edit.title) {
+					const s = slug(edit.title, edit.kind);
+					if (records[s]) matchedKey = s;
+				}
+
+				if (matchedKey) {
+					id = matchedKey;
+				}
+			}
+
+			// 3. Check if title starts with an existing key (e.g. "local_pi_web_mvp_state: ...")
+			if (!id && edit.title) {
+				const firstWord = edit.title.trim().split(/[\s:,\(]/)[0].toLowerCase().replace(/^\[?(?:local|global):/, "").replace(/[\`\]\*]/g, "");
+				if (records && records[firstWord]) {
+					id = firstWord;
+				}
+			}
 		}
 
-		const records = state.entries[edit.kind];
-		const before = cloneEntry(records[id]);
-		const entryKey = `${edit.kind}:${id}`;
-		const baseline = cloneEntry(options.baselineState?.entries[edit.kind][id]);
+		const finalId = id ?? "";
+		let effectiveEdit = currentAction !== edit.action ? { ...edit, action: currentAction, id: finalId } : { ...edit, id: finalId };
+		const before = records ? cloneEntry(records[finalId]) : undefined;
+
+		const validationError = validateEdit(effectiveEdit, finalId, before);
+		if (validationError) {
+			appliedEdits.push({ ...effectiveEdit, id: finalId, applied: false, error: validationError });
+			continue;
+		}
+		const entryKey = `${effectiveEdit.kind}:${finalId}`;
+		const baseline = cloneEntry(options.baselineState?.entries[effectiveEdit.kind][finalId]);
 		if (
 			options.baselineState &&
 			!proposalModifiedKeys.has(entryKey) &&
 			JSON.stringify(before) !== JSON.stringify(baseline)
 		) {
 			appliedEdits.push({
-				...edit,
-				id,
+				...effectiveEdit,
+				id: finalId,
 				before,
 				applied: false,
 				error: "entry changed during refinement planning",
 			});
 			continue;
 		}
-		if (edit.action === "delete") {
+		if (effectiveEdit.action === "delete") {
 			if (!before) {
-				appliedEdits.push({ ...edit, id, applied: false, error: "entry not found" });
+				appliedEdits.push({ ...effectiveEdit, id: finalId, applied: false, error: "entry not found" });
 				continue;
 			}
-			delete records[id];
+			delete records[finalId];
 			proposalModifiedKeys.add(entryKey);
-			appliedEdits.push({ ...edit, id, before, applied: true });
+			appliedEdits.push({ ...effectiveEdit, id: finalId, before, applied: true });
 			continue;
 		}
-		if (edit.action === "create" && before) {
-			appliedEdits.push({ ...edit, id, before, applied: false, error: "entry already exists" });
+		if (effectiveEdit.action === "create" && before) {
+			appliedEdits.push({ ...effectiveEdit, id: finalId, before, applied: false, error: "entry already exists" });
 			continue;
 		}
-		if (edit.action === "update" && !before) {
-			appliedEdits.push({ ...edit, id, applied: false, error: "entry not found" });
+		if (effectiveEdit.action === "update" && !before) {
+			appliedEdits.push({ ...effectiveEdit, id: finalId, applied: false, error: "entry not found" });
 			continue;
 		}
 
 		const createdAt = before?.created_at ?? now();
 		const version = before ? before.version + 1 : 1;
 		const after: HarnessEntry = {
-			id,
-			kind: edit.kind,
-			title: edit.title ?? before?.title ?? id,
-			content: edit.content ?? before?.content ?? "",
-			path: edit.path ?? before?.path ?? "general",
+			id: finalId,
+			kind: effectiveEdit.kind,
+			title: effectiveEdit.title ?? before?.title ?? finalId,
+			content: effectiveEdit.content ?? before?.content ?? "",
+			path: effectiveEdit.path ?? before?.path ?? "general",
 			scope: before?.scope ?? options.scope ?? "local",
-			reference: edit.reference ?? before?.reference ?? {},
-			arguments: edit.arguments ?? before?.arguments ?? {},
-			metadata: edit.metadata ?? before?.metadata ?? {},
+			reference: effectiveEdit.reference ?? before?.reference ?? {},
+			arguments: effectiveEdit.arguments ?? before?.arguments ?? {},
+			metadata: effectiveEdit.metadata ?? before?.metadata ?? {},
 			source: "refine",
 			created_at: createdAt,
 			updated_at: now(),
 			version,
 		};
-		records[id] = after;
+		records[finalId] = after;
 		proposalModifiedKeys.add(entryKey);
-		appliedEdits.push({ ...edit, id, before, after: cloneEntry(after), applied: true });
+		appliedEdits.push({ ...effectiveEdit, id: finalId, before, after: cloneEntry(after), applied: true });
 	}
 
 	const changes = appliedEdits.filter((edit) => edit.applied).map((edit) => `${edit.action} ${edit.kind}:${edit.id}`);
@@ -1227,10 +1591,27 @@ function parseAutoRefineReview(text: string): AutoRefineReview {
 		throw new Error("Auto-refine review JSON must be an object");
 	}
 	const record = value as Record<string, unknown>;
+	const shouldRefine =
+		record.shouldRefine === true ||
+		(record as any).should_refine === true ||
+		record.shouldRefine === "true" ||
+		(record as any).should_refine === "true";
+	const rationale =
+		typeof record.rationale === "string"
+			? record.rationale
+			: typeof (record as any).reason === "string"
+				? (record as any).reason
+				: "No rationale provided.";
+	const instructions =
+		typeof record.instructions === "string"
+			? record.instructions
+			: typeof (record as any).instruction === "string"
+				? (record as any).instruction
+				: undefined;
 	return {
-		shouldRefine: record.shouldRefine === true,
-		rationale: typeof record.rationale === "string" ? record.rationale : "No rationale provided.",
-		instructions: typeof record.instructions === "string" ? record.instructions : undefined,
+		shouldRefine,
+		rationale,
+		instructions,
 	};
 }
 
