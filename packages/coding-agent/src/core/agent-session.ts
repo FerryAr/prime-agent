@@ -169,6 +169,7 @@ import {
 	isPersistedGoalState,
 	normalizeGoalState,
 	validateGoalBudget,
+	validateGoalTurns,
 	validateGoalObjective,
 } from "./goals.js";
 import type { HostRequestHandlers, KernelSentAgentMessage } from "./kernel/index.js";
@@ -553,7 +554,7 @@ export interface AgentSessionConfig {
 	 * Initial goal to seed at session creation. Only applied when rlmDepth
 	 * is 0 and no persisted thread_goal_state entry exists in the branch.
 	 */
-	initialGoal?: { objective: string; tokenBudget?: number };
+	initialGoal?: { objective: string; tokenBudget?: number; maxTurns?: number };
 }
 
 export interface ExtensionBindings {
@@ -991,7 +992,7 @@ type GoalSlashCommand =
 	| { kind: "clear" }
 	| { kind: "pause" }
 	| { kind: "resume" }
-	| { kind: "start"; objective: string; tokenBudget?: number };
+	| { kind: "start"; objective: string; tokenBudget?: number | null; maxTurns?: number | null; restart?: boolean };
 
 type AutonomousSlashCommand = { kind: "status" } | { kind: "on"; config?: AgentAutonomousConfig } | { kind: "off" };
 
@@ -1121,15 +1122,34 @@ function isPersistedRlmMaxDepthState(value: unknown): value is PersistedRlmMaxDe
 	);
 }
 
-function parseGoalBudgetValue(value: string): number {
-	if (!/^[1-9]\d*$/.test(value)) {
+function parseGoalBudgetValue(value: string): number | null {
+	const norm = value.trim().toLowerCase();
+	if (norm === "none" || norm === "0" || norm === "unlimited" || norm === "null") {
+		return null;
+	}
+	if (!/^[1-9]\d*$/.test(norm)) {
 		throw new Error("Goal token budget must be a positive integer.");
 	}
-	const budget = validateGoalBudget(Number(value));
+	const budget = validateGoalBudget(Number(norm));
 	if (budget === undefined) {
 		throw new Error("Goal token budget must be a positive integer.");
 	}
 	return budget;
+}
+
+function parseGoalTurnsValue(value: string): number | null {
+	const norm = value.trim().toLowerCase();
+	if (norm === "none" || norm === "0" || norm === "unlimited" || norm === "null") {
+		return null;
+	}
+	if (!/^[1-9]\d*$/.test(norm)) {
+		throw new Error("Goal turn limit must be a positive integer.");
+	}
+	const turns = validateGoalTurns(Number(norm));
+	if (turns === undefined) {
+		throw new Error("Goal turn limit must be a positive integer.");
+	}
+	return turns;
 }
 
 const AUTONOMOUS_STATUS_NUMBER_FORMAT = new Intl.NumberFormat("en-US");
@@ -1677,7 +1697,7 @@ export class AgentSession {
 		// thread_goal_state. This prevents reseeding after clear/complete/error
 		// or restart/rehydration of a session that already has messages or a goal.
 		if (this._rlmDepth === 0 && config.initialGoal && this._isBranchSeedable()) {
-			this._goalState = this._startGoal(config.initialGoal.objective, config.initialGoal.tokenBudget);
+			this._goalState = this._startGoal(config.initialGoal.objective, config.initialGoal.tokenBudget, config.initialGoal.maxTurns);
 			// Goal context is the model's only source of goal visibility; action
 			// admission is unavailable mid-construction, so ride the next turn.
 			this._pendingNextTurnMessages.push(createGoalContextMessage(this._goalState, "continuation"));
@@ -2231,9 +2251,10 @@ export class AgentSession {
 		this._emitQueueUpdate();
 	}
 
-	private _startGoal(objectiveText: string, tokenBudget: number | undefined): GoalState {
+	private _startGoal(objectiveText: string, tokenBudget: number | undefined, maxTurns?: number): GoalState {
 		const objective = validateGoalObjective(objectiveText);
 		const budget = validateGoalBudget(tokenBudget);
+		const turns = validateGoalTurns(maxTurns);
 		const now = Date.now();
 		const goal: GoalState = {
 			active: true,
@@ -2241,11 +2262,49 @@ export class AgentSession {
 			goalId: randomUUID(),
 			objective,
 			tokenBudget: budget,
+			maxTurns: turns,
 			tokensUsed: 0,
 			timeUsedSeconds: 0,
 			continuationsUsed: 0,
 			createdAt: now,
 			updatedAt: now,
+		};
+		this._goalAccountingStartedAt = now;
+		this._goalContinuationAwaitsRlmWork = false;
+		this._setGoalState(goal);
+		return this._goalState;
+	}
+
+	private _updateGoal(
+		objectiveText: string,
+		tokenBudget: number | null | undefined,
+		maxTurns?: number | null | undefined,
+	): GoalState {
+		const objective = validateGoalObjective(objectiveText);
+		const budget =
+			tokenBudget === null
+				? undefined
+				: tokenBudget === undefined
+					? this._goalState.tokenBudget
+					: validateGoalBudget(tokenBudget);
+		const turns =
+			maxTurns === null
+				? undefined
+				: maxTurns === undefined
+					? this._goalState.maxTurns
+					: validateGoalTurns(maxTurns);
+		const now = Date.now();
+		const current = this._goalWithAccountedWallClock();
+		const goal: GoalState = {
+			...current,
+			active: true,
+			status: "active",
+			objective,
+			tokenBudget: budget,
+			maxTurns: turns,
+			updatedAt: now,
+			lastError: undefined,
+			lastReason: undefined,
 		};
 		this._goalAccountingStartedAt = now;
 		this._goalContinuationAwaitsRlmWork = false;
@@ -2283,14 +2342,22 @@ export class AgentSession {
 			this._emitGoalUpdate();
 			return;
 		}
-		const exhausted =
+		const tokensExhausted =
 			this._goalState.tokenBudget !== undefined && this._goalState.tokensUsed >= this._goalState.tokenBudget;
+		const turnsExhausted =
+			this._goalState.maxTurns !== undefined && this._goalState.continuationsUsed >= this._goalState.maxTurns;
+		const exhausted = tokensExhausted || turnsExhausted;
 		const nextStatus: GoalStatus = exhausted ? "budget_limited" : "active";
+		const reason = turnsExhausted
+			? "Goal turn limit already reached"
+			: tokensExhausted
+				? "Goal token budget already reached"
+				: undefined;
 		this._setGoalState({
 			...this._goalState,
 			active: nextStatus === "active",
 			status: nextStatus,
-			lastReason: exhausted ? "Goal token budget already reached" : undefined,
+			lastReason: reason,
 			lastError: undefined,
 		});
 		if (nextStatus === "active") {
@@ -2362,36 +2429,37 @@ export class AgentSession {
 			return { kind: "resume" };
 		}
 
-		let tokenBudget: number | undefined;
-		let objective = rest;
-		const firstToken = rest.split(/\s+/, 1)[0] ?? "";
-		if (
-			firstToken === "--budget" ||
-			firstToken === "--token-budget" ||
-			firstToken.startsWith("--budget=") ||
-			firstToken.startsWith("--token-budget=")
-		) {
-			let valueText: string;
-			if (firstToken === "--budget" || firstToken === "--token-budget") {
-				const withoutFlag = rest.slice(firstToken.length).trimStart();
-				const nextSpace = withoutFlag.search(/\s/);
-				if (nextSpace < 0) {
-					throw new Error("Usage: /goal [--budget <tokens>] <objective>");
-				}
-				valueText = withoutFlag.slice(0, nextSpace);
-				objective = withoutFlag.slice(nextSpace + 1).trim();
-			} else {
-				const separator = firstToken.indexOf("=");
-				valueText = firstToken.slice(separator + 1);
-				objective = rest.slice(firstToken.length).trim();
-			}
-			tokenBudget = parseGoalBudgetValue(valueText);
+		let tokenBudget: number | null | undefined;
+		let maxTurns: number | null | undefined;
+		let working = rest;
+
+		const restartMatch = /--(?:restart|reset|new)/i.exec(working);
+		let restart = false;
+		if (restartMatch) {
+			restart = true;
+			working = working.replace(restartMatch[0], " ");
 		}
+
+		const budgetMatch = /--(?:token-budget|budget)(?:=(\S+)|\s+(\S+))/i.exec(working);
+		if (budgetMatch) {
+			const rawVal = budgetMatch[1] ?? budgetMatch[2];
+			tokenBudget = parseGoalBudgetValue(rawVal);
+			working = working.replace(budgetMatch[0], " ");
+		}
+		const turnsMatch = /--(?:max-turns|turn-budget|turns)(?:=(\S+)|\s+(\S+))/i.exec(working);
+		if (turnsMatch) {
+			const rawVal = turnsMatch[1] ?? turnsMatch[2];
+			maxTurns = parseGoalTurnsValue(rawVal);
+			working = working.replace(turnsMatch[0], " ");
+		}
+		const objective = working.trim().replace(/\s+/g, " ");
 
 		return {
 			kind: "start",
 			objective: validateGoalObjective(objective),
 			tokenBudget,
+			maxTurns,
+			restart,
 		};
 	}
 
@@ -2863,14 +2931,26 @@ export class AgentSession {
 			return true;
 		}
 
-		const previousWasActive = this._goalState.status === "active";
+		const hasExistingGoal = Boolean(
+			this._goalState.objective &&
+			(this._goalState.status === "active" || this._goalState.status === "paused" || this._goalState.status === "budget_limited")
+		);
 		if (!this.isStreaming) {
 			await this._validateCanStartAgentRun();
 		}
 		this._ensureGoalRuntimeActive();
 		this._clearQueuedGoalContexts();
-		this._startGoal(command.objective, command.tokenBudget);
-		await this._runOrQueueGoalContext(previousWasActive ? "objective_updated" : "continuation", images);
+		if (hasExistingGoal && !command.restart) {
+			this._updateGoal(command.objective, command.tokenBudget, command.maxTurns);
+			await this._runOrQueueGoalContext("objective_updated", images);
+		} else {
+			this._startGoal(
+				command.objective,
+				command.tokenBudget === null ? undefined : command.tokenBudget,
+				command.maxTurns === null ? undefined : command.maxTurns,
+			);
+			await this._runOrQueueGoalContext("continuation", images);
+		}
 		return true;
 	}
 
@@ -2899,16 +2979,21 @@ export class AgentSession {
 			...goal,
 			tokensUsed: goal.tokensUsed + tokenDelta,
 		};
-		const budgetReached = nextGoal.tokenBudget !== undefined && nextGoal.tokensUsed >= nextGoal.tokenBudget;
+		const tokenBudgetReached = nextGoal.tokenBudget !== undefined && nextGoal.tokensUsed >= nextGoal.tokenBudget;
+		const turnBudgetReached = nextGoal.maxTurns !== undefined && nextGoal.continuationsUsed >= nextGoal.maxTurns;
+		const budgetReached = tokenBudgetReached || turnBudgetReached;
 		if (!budgetReached) {
 			this._setGoalState(nextGoal);
 			return false;
 		}
+		const reason = turnBudgetReached
+			? `Reached ${nextGoal.maxTurns} turns limit`
+			: `Reached ${nextGoal.tokenBudget} token goal budget`;
 		this._setGoalState({
 			...nextGoal,
 			active: false,
 			status: "budget_limited",
-			lastReason: `Reached ${nextGoal.tokenBudget} token goal budget`,
+			lastReason: reason,
 			lastError: undefined,
 		});
 		return true;
@@ -3685,7 +3770,10 @@ export class AgentSession {
 				if (payload.token_budget !== undefined && typeof payload.token_budget !== "number") {
 					throw new Error("goal.create token_budget must be an integer when provided");
 				}
-				return goalHostResponse(this._createGoalFromHost(payload.objective, payload.token_budget), false);
+				if (payload.max_turns !== undefined && typeof payload.max_turns !== "number") {
+					throw new Error("goal.create max_turns must be an integer when provided");
+				}
+				return goalHostResponse(this._createGoalFromHost(payload.objective, payload.token_budget, payload.max_turns), false);
 			}
 			case "goal.complete":
 				return goalHostResponse(this._completeGoalFromHost(), true);
@@ -3968,7 +4056,7 @@ export class AgentSession {
 		}
 	}
 
-	private _createGoalFromHost(objective: string, tokenBudget: number | undefined): GoalState {
+	private _createGoalFromHost(objective: string, tokenBudget: number | undefined, maxTurns?: number): GoalState {
 		switch (this._goalState.status) {
 			case "active":
 				throw new Error(
@@ -3984,7 +4072,7 @@ export class AgentSession {
 				);
 			default:
 				// idle, or a terminal record (complete / error): nothing pending, start fresh.
-				return this._startGoal(objective, tokenBudget);
+				return this._startGoal(objective, tokenBudget, maxTurns);
 		}
 	}
 
@@ -4024,6 +4112,16 @@ export class AgentSession {
 			return [];
 		}
 		this._goalContinuationAwaitsRlmWork = false;
+		if (this._goalState.maxTurns !== undefined && this._goalState.continuationsUsed >= this._goalState.maxTurns) {
+			this._setGoalState({
+				...this._goalState,
+				active: false,
+				status: "budget_limited",
+				lastReason: `Reached ${this._goalState.maxTurns} turns limit`,
+				lastError: undefined,
+			});
+			return [];
+		}
 		try {
 			this._ensureGoalRuntimeActive(context.context);
 			const nextGoal = {
@@ -5367,7 +5465,7 @@ export class AgentSession {
 		}
 		await this._prompt(text, {
 			...options,
-			resumeIfIdle: false,
+			resumeIfIdle: options?.resumeIfIdle ?? true,
 			expandPromptTemplates: false,
 			skipInputHandlers: true,
 			skipPrePromptWork: true,
@@ -5464,18 +5562,23 @@ export class AgentSession {
 		) {
 			return;
 		}
+		let flushedNoticesCount = 0;
 		while (true) {
 			const index = this._pendingNextTurnMessages.findIndex((message) => this._isRlmTerminalNotice(message));
 			if (index < 0) break;
 			const message = this._pendingNextTurnMessages[index];
 			try {
 				this._enqueueRlmTerminalNoticeAction(message);
+				flushedNoticesCount++;
 			} catch {
 				return;
 			}
 			this._pendingNextTurnMessages.splice(index, 1);
 		}
 		this._scheduleSessionInputPump();
+		if (flushedNoticesCount > 0 && !this.hasRunningRlmChildren() && !this._goalOwnsContinuationWakeup() && !this._autonomousState.enabled) {
+			this.resumeQueuedWork();
+		}
 	}
 
 	private async _acquireRlmTerminalNoticeRetentionFence(): Promise<{ owner: symbol; release(): void } | undefined> {
@@ -6995,12 +7098,16 @@ export class AgentSession {
 					displayResult = false;
 					break;
 				}
-				case "goal":
+				case "goal": {
 					await this._handleGoalSlashCommand(input.text, input.images);
-					resultText = this._goalState.objective
-						? `Goal ${this._goalState.status}: ${this._goalState.objective}`
-						: "No active goal.";
+					const isClearCmd = input.command.args?.trim().toLowerCase() === "clear" || input.command.args?.trim().toLowerCase() === "stop";
+					resultText = isClearCmd
+						? "Goal cleared."
+						: this._goalState.objective
+							? `Goal ${this._goalState.status}: ${this._goalState.objective}`
+							: "No active goal.";
 					break;
+				}
 				case "autonomous":
 					await this._handleAutonomousSlashCommand(input.text);
 					break;
@@ -12429,6 +12536,9 @@ export class AgentSession {
 					this._unsettledRlmChildRuns.delete(run);
 					this._maybeResumeGoalContinuationAfterRlmWork();
 					this._maybeResumeAutonomousContinuationAfterRlmWork();
+					if (!this.hasRunningRlmChildren() && !this._goalOwnsContinuationWakeup() && !this._autonomousState.enabled) {
+						this.resumeQueuedWork();
+					}
 				}
 			}
 		})().catch(() => undefined);

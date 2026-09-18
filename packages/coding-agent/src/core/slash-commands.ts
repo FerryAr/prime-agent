@@ -174,7 +174,7 @@ const CANONICAL_BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{
 		name: "goal",
 		description: "Set or view a persistent goal; supports pause, resume, and clear",
-		argumentHint: "[objective]",
+		argumentHint: "[--budget <tokens>] [--turns <n>] [objective]",
 		takesArgument: true,
 	},
 	{

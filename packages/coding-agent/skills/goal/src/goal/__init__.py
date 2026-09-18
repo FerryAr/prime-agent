@@ -22,7 +22,7 @@ async def get() -> dict[str, Any]:
     return await host_request("goal.get")
 
 
-async def create(objective: str, token_budget: int | None = None) -> dict[str, Any]:
+async def create(objective: str, token_budget: int | None = None, max_turns: int | None = None) -> dict[str, Any]:
     """Start a new active thread goal.
 
     Fails while a goal is still pending (active, paused, or budget-limited);
@@ -35,9 +35,13 @@ async def create(objective: str, token_budget: int | None = None) -> dict[str, A
         raise TypeError(f"objective must be str, got {type(objective).__name__}")
     if token_budget is not None and not isinstance(token_budget, int):
         raise TypeError(f"token_budget must be int or None, got {type(token_budget).__name__}")
+    if max_turns is not None and not isinstance(max_turns, int):
+        raise TypeError(f"max_turns must be int or None, got {type(max_turns).__name__}")
     payload: dict[str, Any] = {"objective": objective}
     if token_budget is not None:
         payload["token_budget"] = token_budget
+    if max_turns is not None:
+        payload["max_turns"] = max_turns
     return await host_request("goal.create", payload)
 
 

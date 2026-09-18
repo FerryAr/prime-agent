@@ -548,6 +548,62 @@ describe("AgentSession goals", () => {
 		expect(visibleAssistantTexts(harness)).toEqual(["answered the interjection", "Goal complete."]);
 		expect(harness.session.goalState).toMatchObject({ active: false, status: "complete" });
 	});
+	it("reports active goal elapsed time on status reads and goal.get", async () => {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		try {
+			vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+			const waiting = createWaitingTool();
+			const harness = await createGoalHarness([waiting.tool]);
+			harness.setResponses([fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" })]);
+
+			const waitForStart = waiting.waitForStart(harness);
+			const promptPromise = harness.session.prompt("/goal track elapsed time");
+			await waitForStart;
+			vi.setSystemTime(new Date("2026-01-01T00:00:05Z"));
+
+			expect(harness.session.goalState.timeUsedSeconds).toBe(5);
+			const response: GoalHostResponse = harness.session.handleGoalHostRequest("goal.get");
+			expect(response.goal?.time_used_seconds).toBe(5);
+
+			await harness.session.prompt("/goal pause");
+			waiting.release();
+			await promptPromise;
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("updates an active goal objective and boundaries without creating a new goal", async () => {
+		const harness = await createGoalHarness();
+		harness.session.handleGoalHostRequest("goal.create", {
+			objective: "Initial objective",
+			token_budget: 50000,
+			max_turns: 5,
+		});
+		const initialGoal = harness.session.goalState;
+		expect(initialGoal.status).toBe("active");
+		expect(initialGoal.objective).toBe("Initial objective");
+		expect(initialGoal.tokenBudget).toBe(50000);
+		expect(initialGoal.maxTurns).toBe(5);
+		const initialGoalId = initialGoal.goalId;
+		expect(initialGoalId).toBeDefined();
+
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("ipython", COMPLETE_GOAL_CELL), { stopReason: "toolUse" }),
+			fauxAssistantMessage("Goal complete."),
+		]);
+
+		// Edit goal while active to new objective and 100k budget
+		await harness.session.prompt("/goal Updated objective --budget 100000 --turns 10");
+
+		const goalUpdates = harness.eventsOfType("goal_update");
+		const updateEvent = goalUpdates.find((e) => e.goal.objective === "Updated objective");
+		expect(updateEvent).toBeDefined();
+		expect(updateEvent?.goal.goalId).toBe(initialGoalId); // Goal ID MUST be preserved!
+		expect(updateEvent?.goal.tokenBudget).toBe(100000);
+		expect(updateEvent?.goal.maxTurns).toBe(10);
+	});
+
 });
 
 describe("initial goal seeding from config", () => {
