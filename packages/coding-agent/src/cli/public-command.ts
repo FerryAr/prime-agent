@@ -1,8 +1,13 @@
+import { execFile, execSync, spawn } from "node:child_process";
+import { existsSync, readFileSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import chalk from "chalk";
-import { APP_NAME, SELF_UPDATE_INTERACTIVE_CHILD_ENV } from "../config.js";
+import { APP_NAME, getAgentDir, SELF_UPDATE_INTERACTIVE_CHILD_ENV } from "../config.js";
 import { AuthStorage } from "../core/auth-storage.js";
 import { runMcpManagementCommand } from "../core/mcp/mcp-command.js";
 import { SettingsManager } from "../core/settings-manager.js";
+import { defaultDaemonSocketPath, normalizeSocketPath } from "../modes/daemon/daemon-socket.js";
 import { handlePackageCommand, isSelfUpdateSource } from "../package-manager-cli.js";
 import { INTERNAL_RUNTIME_COMMAND_MARKER, parseArgs } from "./args.js";
 import {
@@ -16,6 +21,7 @@ import {
 	REMOVED_COMMAND_NAMES,
 } from "./command-registry.js";
 import { handleDaemonCommand } from "./daemon-command.js";
+import { ensureInteractiveDaemonRunning } from "./daemon-launch.js";
 import { runPs, runReap, runShutdownAll } from "./daemon-ps.js";
 import { DAEMON_UPDATE_RESTART_COORDINATOR_FLAG } from "./daemon-update-restart.js";
 import { extractHelpCommandPath, rotateGlobalFlagsBeforeCommand } from "./global-flags.js";
@@ -154,6 +160,8 @@ async function runPublicCommand(args: string[]): Promise<PublicCommandResult> {
 		case "config":
 			if (!requireArgumentCount(args.slice(1), 0, "config")) return HANDLED;
 			return continueWith(args);
+		case "web":
+			return runWeb(args.slice(1));
 		default:
 			return continueWith(args);
 	}
@@ -263,6 +271,249 @@ async function runShutdown(args: string[]): Promise<PublicCommandResult> {
 	const options = parseBooleanOptions(args, new Set(["--force", "--json"]), "shutdown");
 	if (!options) return HANDLED;
 	await runShutdownAll(options.has("--json"), options.has("--force"));
+	return HANDLED;
+}
+
+function delay(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function openBrowserUrl(url: string): void {
+	const [command, ...args] =
+		process.platform === "darwin"
+			? ["open", url]
+			: process.platform === "win32"
+				? [
+						join(process.env.SystemRoot ?? "C:\\Windows", "System32", "rundll32.exe"),
+						"url.dll,FileProtocolHandler",
+						url,
+					]
+				: ["xdg-open", url];
+	execFile(command, args, () => {});
+}
+
+function findWebGatewayLaunchSpec(): { command: string; args: string[]; cwd: string } | undefined {
+	let current = dirname(fileURLToPath(import.meta.url));
+	let webPkgDir: string | undefined;
+	for (let i = 0; i < 6; i++) {
+		const candidate = join(current, "packages", "coding-agent-web");
+		if (existsSync(join(candidate, "package.json"))) {
+			webPkgDir = candidate;
+			break;
+		}
+		const sibling = join(current, "coding-agent-web");
+		if (existsSync(join(sibling, "package.json"))) {
+			webPkgDir = sibling;
+			break;
+		}
+		const parent = dirname(current);
+		if (parent === current) break;
+		current = parent;
+	}
+	if (!webPkgDir) return undefined;
+
+	const srcMain = join(webPkgDir, "src", "main.ts");
+	const tsxCli = join(dirname(webPkgDir), "..", "node_modules", "tsx", "dist", "cli.mjs");
+	if (existsSync(srcMain) && existsSync(tsxCli)) {
+		return { command: process.execPath, args: [tsxCli, srcMain], cwd: webPkgDir };
+	}
+	const distMain = join(webPkgDir, "dist", "main.js");
+	if (existsSync(distMain)) {
+		return { command: process.execPath, args: [distMain], cwd: webPkgDir };
+	}
+	return undefined;
+}
+
+function getWebGatewayRunning(
+	port: number,
+	gatewayInfoPath: string,
+): { pid: number; url: string } | null {
+	if (existsSync(gatewayInfoPath)) {
+		try {
+			const info = JSON.parse(readFileSync(gatewayInfoPath, "utf8"));
+			if (typeof info?.pid === "number" && info.pid > 0) {
+				try {
+					process.kill(info.pid, 0);
+					return { pid: info.pid, url: info.url || `http://127.0.0.1:${port}` };
+				} catch {}
+			}
+		} catch {}
+	}
+	try {
+		const output = execSync(`lsof -iTCP:${port} -sTCP:LISTEN -t 2>/dev/null || true`, {
+			encoding: "utf8",
+		}).trim();
+		const pid = Number.parseInt(output.split("\n")[0] || "", 10);
+		if (Number.isInteger(pid) && pid > 0) {
+			return { pid, url: `http://127.0.0.1:${port}` };
+		}
+	} catch {}
+	return null;
+}
+
+async function stopWebGateway(
+	port: number,
+	gatewayInfoPath: string,
+): Promise<{ stopped: boolean; pids: number[] }> {
+	const killedPids: Set<number> = new Set();
+
+	// 1. Check gateway.json PID
+	if (existsSync(gatewayInfoPath)) {
+		try {
+			const info = JSON.parse(readFileSync(gatewayInfoPath, "utf8"));
+			if (typeof info?.pid === "number" && info.pid > 0) {
+				try {
+					process.kill(info.pid, 0);
+					process.kill(info.pid, "SIGTERM");
+					killedPids.add(info.pid);
+				} catch {}
+			}
+		} catch {}
+	}
+
+	// 2. Check any process listening on the web port
+	try {
+		const output = execSync(`lsof -iTCP:${port} -sTCP:LISTEN -t 2>/dev/null || true`, {
+			encoding: "utf8",
+		}).trim();
+		for (const line of output.split("\n")) {
+			const pid = Number.parseInt(line.trim(), 10);
+			if (Number.isInteger(pid) && pid > 0 && pid !== process.pid) {
+				try {
+					process.kill(pid, "SIGTERM");
+					killedPids.add(pid);
+				} catch {}
+			}
+		}
+	} catch {}
+
+	// 3. Poll until processes exit
+	if (killedPids.size > 0) {
+		for (let i = 0; i < 20; i++) {
+			let anyAlive = false;
+			for (const pid of killedPids) {
+				try {
+					process.kill(pid, 0);
+					anyAlive = true;
+				} catch {}
+			}
+			if (!anyAlive) break;
+			await delay(100);
+		}
+
+		// Force-kill any lingering processes
+		for (const pid of killedPids) {
+			try {
+				process.kill(pid, 0);
+				process.kill(pid, "SIGKILL");
+			} catch {}
+		}
+	}
+
+	// 4. Remove gateway.json
+	try {
+		rmSync(gatewayInfoPath, { force: true });
+	} catch {}
+
+	return { stopped: killedPids.size > 0, pids: [...killedPids] };
+}
+
+async function runWeb(args: string[]): Promise<PublicCommandResult> {
+	const isStop =
+		args.includes("stop") ||
+		args.includes("--stop") ||
+		args.includes("shutdown") ||
+		args.includes("--shutdown");
+	const isRestart = args.includes("restart") || args.includes("--restart");
+	const isStatus = args.includes("status") || args.includes("--status");
+	const noOpen = args.includes("--no-open");
+
+	const port = Number(process.env.PRIME_AGENT_WEB_PORT || 4677);
+	const host = process.env.PRIME_AGENT_WEB_HOST || "0.0.0.0";
+	const gatewayInfoPath = join(getAgentDir(), "prime-agent-web", "gateway.json");
+
+	// Handle stop / shutdown
+	if (isStop) {
+		const res = await stopWebGateway(port, gatewayInfoPath);
+		if (res.stopped) {
+			console.log(chalk.green(`Prime Agent Web UI stopped (PID: ${res.pids.join(", ")}).`));
+		} else {
+			console.log(chalk.yellow(`Prime Agent Web UI is not running.`));
+		}
+		return HANDLED;
+	}
+
+	// Handle status
+	if (isStatus) {
+		const running = getWebGatewayRunning(port, gatewayInfoPath);
+		if (running) {
+			console.log(chalk.green(`Prime Agent Web UI is running at ${running.url} (PID: ${running.pid}).`));
+		} else {
+			console.log(chalk.yellow(`Prime Agent Web UI is not running.`));
+		}
+		return HANDLED;
+	}
+
+	// Handle restart
+	if (isRestart) {
+		console.log(chalk.cyan(`Restarting Prime Agent Web UI...`));
+		await stopWebGateway(port, gatewayInfoPath);
+		for (let i = 0; i < 20; i++) {
+			if (!getWebGatewayRunning(port, gatewayInfoPath)) break;
+			await delay(100);
+		}
+	}
+
+	const socketArgIndex = args.indexOf("--daemon-socket");
+	const socketArg = socketArgIndex !== -1 ? args[socketArgIndex + 1] : undefined;
+	const socketPath = normalizeSocketPath(socketArg ?? defaultDaemonSocketPath());
+	try {
+		await ensureInteractiveDaemonRunning(socketPath);
+	} catch (error) {
+		if (error instanceof Error && error.name === "StaleDaemonError") {
+			// A daemon is already running with active sessions. Web UI can attach
+			// to it over protocol 7 without interrupting active work.
+		} else {
+			throw error;
+		}
+	}
+
+	let running = isRestart ? null : getWebGatewayRunning(port, gatewayInfoPath);
+	if (!running) {
+		const spec = findWebGatewayLaunchSpec();
+		if (spec) {
+			const env: NodeJS.ProcessEnv = {
+				...process.env,
+				PRIME_AGENT_WEB_DAEMON_SOCKET: socketPath,
+			};
+			const child = spawn(spec.command, spec.args, {
+				cwd: spec.cwd,
+				detached: true,
+				stdio: "ignore",
+				env,
+			});
+			child.unref();
+		}
+	}
+
+	let url = `http://${host === "0.0.0.0" ? "127.0.0.1" : host}:${port}`;
+	for (let i = 0; i < 40; i++) {
+		if (existsSync(gatewayInfoPath)) {
+			try {
+				const info = JSON.parse(readFileSync(gatewayInfoPath, "utf8"));
+				if (info?.url) {
+					url = info.url;
+					break;
+				}
+			} catch {}
+		}
+		await delay(100);
+	}
+
+	console.log(chalk.green(`Prime Agent Web UI: ${url}`));
+	if (!noOpen) {
+		openBrowserUrl(url);
+	}
 	return HANDLED;
 }
 

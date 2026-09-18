@@ -183,6 +183,17 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
 		usage: "config",
 		summary: "Configure package resources",
 	},
+	{
+		path: ["web"],
+		usage: "web [--no-open] [--stop|--restart|--status]",
+		summary: "Open, stop, or restart the Prime Agent web interface",
+		options: [
+			"--no-open    Print the web UI URL without opening a browser",
+			"--stop       Stop the running web interface (alias: shutdown, stop)",
+			"--restart    Restart the web interface (alias: restart)",
+			"--status     Show whether the web interface is running",
+		],
+	},
 ];
 
 export const PUBLIC_COMMAND_NAMES = new Set(
