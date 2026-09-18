@@ -45,3 +45,7 @@ collect.sh
 
 __pycache__/
 *.pyc
+
+# Local launcher
+/prime
+scripts/*local*.mjs
