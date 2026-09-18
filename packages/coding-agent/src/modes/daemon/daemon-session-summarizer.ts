@@ -202,7 +202,7 @@ export async function generateAgentStatus(params: GenerateAgentStatusParams): Pr
 
 function isSessionWorking(state: ActiveSessionState): boolean {
 	const session = state.runtime.session;
-	return session.isSessionActive;
+	return session.isSessionActive || session.hasRunningRlmChildren();
 }
 
 // Recap prefix for a turn that errored; the transcript's own error text follows

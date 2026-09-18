@@ -363,7 +363,11 @@ export class DaemonCatalogClient {
 		const child = spawnHidden(command, args, {
 			cwd: process.cwd(),
 			env: environment,
-			stdio: ["ignore", "ignore", "ignore", "ipc"],
+			stdio: ["ignore", "ignore", "pipe", "ipc"],
+		});
+		child.stderr?.on("data", (chunk: Buffer) => {
+			const message = chunk.toString("utf8").trim();
+			if (message) this.onDiagnostic(`Daemon catalog stderr: ${message}`);
 		});
 		this.child = child;
 		child.on("message", (value: unknown) => this.handleMessage(value));

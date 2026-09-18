@@ -419,7 +419,7 @@ export function hasLiveSessionWork(activeSession: ActiveSessionState): boolean {
 
 export function activeActivityForSession(activeSession: ActiveSessionState): SessionActivity {
 	// The session's own work only, ignoring the classification verdict.
-	if (activeSession.runtime.session.isSessionActive) {
+	if (activeSession.runtime.session.isSessionActive || activeSession.runtime.session.hasRunningRlmChildren()) {
 		return "working";
 	}
 	// A finished subagent is resident but never gets a summarizer verdict, so don't hold

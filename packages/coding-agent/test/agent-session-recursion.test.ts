@@ -2709,6 +2709,19 @@ print(_result.name)
 			await manager.shutdown({ snapshot: true, drainHostRequests: true });
 		}
 	});
+
+	it("delivers terminal notice and resumes idle parent session when child completes", async () => {
+		const root = createSession();
+		await root.runRlmChild("child task", { name: "worker-resume-test" });
+		await root.waitForRlmQuiescence();
+
+		expect(root.hasRunningRlmChildren()).toBe(false);
+		expect(
+			root.messages.some(
+				(message) => message.role === "custom" && message.customType === "rlm_child_terminal_notice",
+			),
+		).toBe(true);
+	});
 });
 
 interface InspectableRlmDirSession {

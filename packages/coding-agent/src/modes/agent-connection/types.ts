@@ -338,6 +338,7 @@ export interface AgentConnectionState {
 	isStreaming: boolean;
 	isCompacting: boolean;
 	isBashRunning: boolean;
+	hasRunningRlmChildren?: boolean;
 	retryAttempt: number;
 	steeringMode: AgentConnectionQueueMode;
 	followUpMode: AgentConnectionQueueMode;

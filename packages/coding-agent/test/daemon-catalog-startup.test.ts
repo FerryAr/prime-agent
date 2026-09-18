@@ -1,10 +1,11 @@
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const spawnState = vi.hoisted(() => ({
 	args: [] as string[],
-	child: undefined as (EventEmitter & { connected: boolean }) | undefined,
+	child: undefined as (EventEmitter & { connected: boolean; stderr: PassThrough }) | undefined,
 }));
 
 vi.mock("node:child_process", () => ({
@@ -12,6 +13,7 @@ vi.mock("node:child_process", () => ({
 		spawnState.args = args;
 		const child = Object.assign(new EventEmitter(), {
 			connected: true,
+			stderr: new PassThrough(),
 			disconnect: vi.fn(),
 			kill: vi.fn(),
 			send: vi.fn(),
@@ -48,5 +50,19 @@ describe("daemon catalog startup", () => {
 
 		spawnState.child?.emit("exit", 1, null);
 		await expect(starting).rejects.toThrow(/exited during startup/);
+	});
+
+	it("logs the underlying error before a catalog startup failure", async () => {
+		const diagnostic = vi.fn();
+		const client = new DaemonCatalogClient(diagnostic);
+		const starting = client.start();
+
+		spawnState.child?.stderr.write("Error [ERR_MODULE_NOT_FOUND]: missing runtime dependency\n");
+		spawnState.child?.emit("exit", 1, null);
+
+		await expect(starting).rejects.toThrow(/exited during startup/);
+		expect(diagnostic).toHaveBeenCalledWith(
+			"Daemon catalog stderr: Error [ERR_MODULE_NOT_FOUND]: missing runtime dependency",
+		);
 	});
 });

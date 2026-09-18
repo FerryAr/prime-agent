@@ -1,9 +1,10 @@
-import type { ChildProcess } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, openSync, readSync, closeSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { basename, dirname, join, resolve } from "node:path";
 import { Writable } from "node:stream";
+import { fileURLToPath } from "node:url";
 import { getLogger } from "@earendil-works/pi-ai";
 import { createCliSubprocessEnv, createCliSubprocessLaunchSpec } from "../../cli/subprocess-launch.js";
 import {
@@ -687,6 +688,27 @@ function defaultWorkerDescriptorDir(agentDir: string, socketPath: string): strin
 	return join(agentDir, "daemon-workers", descriptorKey(socketPath));
 }
 
+function tryReadSessionCwd(sessionPath: string): string | undefined {
+	try {
+		if (!existsSync(sessionPath)) return undefined;
+		const fd = openSync(sessionPath, "r");
+		try {
+			const buffer = Buffer.alloc(4096);
+			const bytesRead = readSync(fd, buffer, 0, 4096, 0);
+			const text = buffer.subarray(0, bytesRead).toString("utf8");
+			const firstLine = text.split("\n")[0];
+			if (!firstLine) return undefined;
+			const parsed = JSON.parse(firstLine);
+			if (typeof parsed?.cwd === "string" && parsed.cwd.trim()) {
+				return resolve(parsed.cwd.trim());
+			}
+		} finally {
+			closeSync(fd);
+		}
+	} catch {}
+	return undefined;
+}
+
 export function idleEvictionSweepIntervalMs(idleEvictionMinutes: IdleEvictionMinutes): number {
 	if (idleEvictionMinutes === "off") return IDLE_EVICTION_MAX_SWEEP_INTERVAL_MS;
 	return Math.max(
@@ -787,6 +809,7 @@ export class DaemonSupervisor {
 	private idleEvictionSweep?: Promise<void>;
 	private idleEvictionFence?: Promise<void>;
 	private scheduledWakeTimer?: ReturnType<typeof setTimeout>;
+	private webGatewayProcess?: ChildProcess;
 	private scheduledWakeRecompute?: Promise<void>;
 	private scheduledWakeRecomputeQueued = false;
 	private readonly scheduledWakeFailures = new Map<string, number>();
@@ -911,6 +934,7 @@ export class DaemonSupervisor {
 			this.startupComplete = true;
 			this.log(`Prime Agent daemon supervisor ${this.generation} listening on ${this.socketPath}`);
 			this.markReady();
+			this.maybeStartWebGateway();
 		} catch (error) {
 			const startupError = error instanceof Error ? error : new Error(String(error));
 			this.log(`Daemon supervisor startup failed: ${startupError.stack ?? startupError.message}`);
@@ -3056,7 +3080,11 @@ export class DaemonSupervisor {
 			if (activeMatches.length > 1) {
 				throw new Error(`Ambiguous active session "${command.sessionPath}"`);
 			}
-			const config = mergeAgentSessionRuntimeConfig(this.defaultSessionConfig, command.config);
+			const recordedCwd = looksLikeSessionPath(command.sessionPath) ? tryReadSessionCwd(command.sessionPath) : undefined;
+			const baseConfig = recordedCwd && !command.config?.cwd
+				? { ...this.defaultSessionConfig, cwd: recordedCwd }
+				: this.defaultSessionConfig;
+			const config = mergeAgentSessionRuntimeConfig(baseConfig, command.config);
 			const sessionPath = looksLikeSessionPath(command.sessionPath)
 				? resolve(command.sessionPath)
 				: await this.catalog.resolve(command.sessionPath, config.cwd ?? process.cwd(), config.sessionDir);
@@ -3297,9 +3325,14 @@ export class DaemonSupervisor {
 		}
 		const recoveryStopRevision = existing?.stopRevision;
 		const launchEnv = command.launchEnv ?? existing?.launchEnv;
+		const targetSessionPath = command.sessionPath ?? existing?.descriptor.sessionFile;
+		const recordedCwd = targetSessionPath && !command.config?.cwd ? tryReadSessionCwd(targetSessionPath) : undefined;
+		const baseConfig = recordedCwd
+			? { ...this.defaultSessionConfig, cwd: recordedCwd }
+			: this.defaultSessionConfig;
 		const createCommand: DaemonCreateCommand = {
 			...withoutSupervisorCreateFields(command),
-			config: mergeAgentSessionRuntimeConfig(this.defaultSessionConfig, command.config),
+			config: mergeAgentSessionRuntimeConfig(baseConfig, command.config),
 		};
 		const workerId = existing?.descriptor.workerId ?? createActiveSessionId();
 		const rootActiveSessionId = existing?.descriptor.rootActiveSessionId ?? createActiveSessionId();
@@ -7272,6 +7305,102 @@ export class DaemonSupervisor {
 		const ownership = this.ownership;
 		this.ownership = undefined;
 		await this.runCleanupStep("daemon ownership", async () => ownership?.release());
+		await this.runCleanupStep("web gateway", () => this.stopWebGateway());
+	}
+
+	private maybeStartWebGateway(): void {
+		if (
+			process.env.PRIME_AGENT_DISABLE_WEB === "1" ||
+			process.env.PRIME_AGENT_DISABLE_WEB === "true" ||
+			process.env.VITEST ||
+			process.env.NODE_ENV === "test"
+		) {
+			return;
+		}
+		const spec = this.findWebGatewayLaunchSpec();
+		if (!spec) {
+			return;
+		}
+		try {
+			const env: NodeJS.ProcessEnv = {
+				...process.env,
+				PRIME_AGENT_WEB_DAEMON_SOCKET: this.socketPath,
+			};
+			const child = spawn(spec.command, spec.args, {
+				cwd: spec.cwd,
+				detached: false,
+				env,
+				stdio: ["ignore", "ignore", "pipe"],
+			});
+			child.stderr?.on("data", (chunk: Buffer) => {
+				const text = chunk.toString("utf8").trim();
+				if (text) this.log(`[Web Gateway] ${text}`);
+			});
+			child.on("error", (error: Error) => {
+				this.log(`Web gateway failed to spawn: ${error.message}`);
+			});
+			child.on("exit", (code: number | null, signal: NodeJS.Signals | null) => {
+				if (!this.shuttingDown && code !== 0 && code !== null) {
+					this.log(`Web gateway exited unexpectedly (code: ${code}, signal: ${signal})`);
+				}
+				if (this.webGatewayProcess === child) {
+					this.webGatewayProcess = undefined;
+				}
+			});
+			this.webGatewayProcess = child;
+		} catch (error) {
+			this.log(`Could not launch web gateway: ${String(error)}`);
+		}
+	}
+
+	private findWebGatewayLaunchSpec(): { command: string; args: string[]; cwd: string } | undefined {
+		let current = dirname(fileURLToPath(import.meta.url));
+		let webPkgDir: string | undefined;
+		for (let i = 0; i < 6; i++) {
+			const candidate = join(current, "packages", "coding-agent-web");
+			if (existsSync(join(candidate, "package.json"))) {
+				webPkgDir = candidate;
+				break;
+			}
+			const sibling = join(current, "coding-agent-web");
+			if (existsSync(join(sibling, "package.json"))) {
+				webPkgDir = sibling;
+				break;
+			}
+			const parent = dirname(current);
+			if (parent === current) break;
+			current = parent;
+		}
+		if (!webPkgDir) return undefined;
+
+		const srcMain = join(webPkgDir, "src", "main.ts");
+		const tsxCli = join(dirname(webPkgDir), "..", "node_modules", "tsx", "dist", "cli.mjs");
+		if (existsSync(srcMain) && existsSync(tsxCli)) {
+			return { command: process.execPath, args: [tsxCli, srcMain], cwd: webPkgDir };
+		}
+		const distMain = join(webPkgDir, "dist", "main.js");
+		if (existsSync(distMain)) {
+			return { command: process.execPath, args: [distMain], cwd: webPkgDir };
+		}
+		return undefined;
+	}
+
+	private async stopWebGateway(): Promise<void> {
+		const proc = this.webGatewayProcess;
+		this.webGatewayProcess = undefined;
+		if (!proc || proc.exitCode !== null || !proc.pid) return;
+		try {
+			proc.kill("SIGTERM");
+		} catch {}
+		await Promise.race([
+			new Promise<void>((resolve) => proc.once("close", () => resolve())),
+			new Promise<void>((resolve) => setTimeout(resolve, 1000)),
+		]);
+		if (proc.exitCode === null) {
+			try {
+				proc.kill("SIGKILL");
+			} catch {}
+		}
 	}
 
 	private async runCleanupStep(label: string, action: () => void | Promise<void>): Promise<void> {
@@ -7355,6 +7484,7 @@ export class DaemonSupervisor {
 		const ownership = this.ownership;
 		this.ownership = undefined;
 		await this.runCleanupStep("daemon ownership", async () => ownership?.release());
+		await this.runCleanupStep("web gateway", () => this.stopWebGateway());
 		if (relaunch) {
 			const launch = createCliSubprocessLaunchSpec(["--mode", "daemon", "--daemon-socket", this.socketPath]);
 			const environment = createCliSubprocessEnv();

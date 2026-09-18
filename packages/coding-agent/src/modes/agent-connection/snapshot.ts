@@ -35,6 +35,7 @@ export function createAgentConnectionState(
 		isStreaming: session.isStreaming,
 		isCompacting: session.isCompacting,
 		isBashRunning: session.isBashRunning,
+		hasRunningRlmChildren: session.hasRunningRlmChildren(),
 		retryAttempt: session.retryAttempt,
 		steeringMode: session.steeringMode,
 		followUpMode: session.followUpMode,

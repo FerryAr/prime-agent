@@ -868,7 +868,7 @@ export class AgentDaemon {
 			// Same predicate the daemon reports as isSessionActive: retrying,
 			// bash/kernel background work, refinement, compaction settlement,
 			// and queued actions must all keep holding the worker.
-			if (state.runtime.session.isSessionActive) {
+			if (state.runtime.session.isSessionActive || state.runtime.session.hasRunningRlmChildren()) {
 				return true;
 			}
 		}
@@ -5879,7 +5879,7 @@ export class AgentDaemon {
 			status: classifySessionRosterStatus({
 				activeSessionId: state.activeSessionId,
 				runtimeKind: metadata.kind,
-				activity: session.isSessionActive ? "working" : "idle",
+				activity: session.isSessionActive || session.hasRunningRlmChildren?.() ? "working" : "idle",
 				isSessionActive: session.isSessionActive,
 				hasRunningRlmChildren: session.hasRunningRlmChildren?.() ?? false,
 				isStreaming: session.isStreaming,
