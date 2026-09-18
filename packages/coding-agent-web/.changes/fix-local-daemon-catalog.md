@@ -1,0 +1,1 @@
+- Fixed test dependency resolution with isolated Bun installs.

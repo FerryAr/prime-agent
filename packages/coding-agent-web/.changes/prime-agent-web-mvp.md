@@ -1,0 +1,1 @@
+- Added coding-agent-web, the Prime Agent web UI: daemon-backed chat streaming over SSE with tool cards, approvals, thinking visibility, searchable model picker, session management (fork/clone/resume/delete), files/git/jobs panel, slash commands, finish chime + notifications, PWA installable mobile layout, and per-client login rate limiting.

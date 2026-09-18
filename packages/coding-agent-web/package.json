@@ -1,0 +1,22 @@
+{
+  "name": "@earendil-works/prime-agent-web",
+  "version": "0.9.5",
+  "private": true,
+  "description": "Minimal local web UI for Prime Agent sessions over the daemon protocol",
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/main.ts",
+    "test": "npx tsx ../../node_modules/vitest/dist/cli.js --run test/",
+    "build": "node scripts/build.mjs",
+    "dev": "tsx src/main.ts"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "^0.9.4"
+  },
+  "engines": {
+    "node": ">=22.8.0"
+  },
+  "devDependencies": {
+    "vitest": "4.1.11"
+  }
+}
