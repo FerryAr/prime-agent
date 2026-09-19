@@ -1349,13 +1349,58 @@ select#thinking:disabled, .selectbtn:disabled, .iconbtn:disabled { opacity: 0.4;
 
 
 /* diff */
-.diff { background: #090d12; border: 1px solid var(--border); border-radius: 8px; margin-top: 8px; overflow-x: auto; }
-.diff .row { display: flex; font-family: var(--mono); font-size: 12px; line-height: 1.5; }
-.diff .row span:first-child { width: 16px; flex: none; text-align: center; opacity: 0.7; user-select: none; }
-.diff .row.add { background: rgba(63, 185, 80, 0.12); color: #7ee2b8; }
-.diff .row.del { background: rgba(248, 81, 73, 0.1); color: #ffb1a9; }
-.diff .row.hunk { color: #d2a8ff; background: rgba(210, 168, 255, 0.07); }
-.diff .row.file { color: #e3b341; font-weight: 600; }
+.diff {
+	background: #090d12;
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	margin-top: 8px;
+	overflow-x: auto;
+	box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+.diff .row {
+	display: flex;
+	font-family: var(--mono);
+	font-size: 12px;
+	line-height: 1.5;
+}
+.diff .row .marker {
+	width: 22px;
+	flex: none;
+	text-align: center;
+	opacity: 0.7;
+	user-select: none;
+	font-weight: 600;
+}
+.diff .row .gutter {
+	display: inline-flex;
+	flex: none;
+	user-select: none;
+	margin-right: 8px;
+	background: rgba(0, 0, 0, 0.25);
+	border-right: 1px solid rgba(255, 255, 255, 0.06);
+}
+.diff .row .gutter .ln {
+	width: 28px;
+	text-align: right;
+	padding-right: 6px;
+	opacity: 0.35;
+	font-size: 10.5px;
+	color: var(--text-dim);
+}
+.diff .row.add .gutter .ln.new {
+	opacity: 0.8;
+	color: #7ee2b8;
+	font-weight: 600;
+}
+.diff .row.del .gutter .ln.old {
+	opacity: 0.8;
+	color: #ffb1a9;
+	font-weight: 600;
+}
+.diff .row.add { background: rgba(63, 185, 80, 0.13); color: #7ee2b8; }
+.diff .row.del { background: rgba(248, 81, 73, 0.12); color: #ffb1a9; }
+.diff .row.hunk { color: #d2a8ff; background: rgba(210, 168, 255, 0.08); font-weight: 600; padding: 2px 0; }
+.diff .row.file { color: #e3b341; font-weight: 600; background: rgba(227, 179, 65, 0.06); }
 .diff .row .code { white-space: pre-wrap; word-break: break-word; padding-right: 8px; }
 
 /* composer */

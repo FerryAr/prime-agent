@@ -1035,25 +1035,62 @@ function toolCard(toolCallId, toolName, argsJson, timestamp = Date.now()) {
 // ---------------------------------------------------------------------------
 
 function renderUnifiedDiff(container, text) {
+	if (!text) return;
 	const box = el("div", "diff");
-	for (const line of text.split("\n")) {
+	let oldLn = 0;
+	let newLn = 0;
+
+	for (const rawLine of text.split("\n")) {
+		// Strip ANSI escape codes from tool terminal output (e.g. \x1b[1;37m)
+		const line = rawLine.replace(/\x1B\[[0-9;]*[a-zA-Z]/g, "");
 		if (line === "" || line.startsWith("\\ No newline")) continue;
+
 		let cls = "row";
 		let marker = " ";
 		let code = line;
-		if (line.startsWith("diff --git") || line.startsWith("index ") || line.startsWith("new file") || line.startsWith("deleted file")) {
-			cls += " file"; marker = "#";
+		let oldNum = "";
+		let newNum = "";
+
+		if (line.startsWith("diff --git") || line.startsWith("index ") || line.startsWith("new file") || line.startsWith("deleted file") || line.startsWith("---DIFF---") || line.startsWith("=== ")) {
+			cls += " file";
+			marker = "#";
 		} else if (line.startsWith("@@")) {
-			cls += " hunk"; marker = "@";
-		} else if (line.startsWith("+")) {
-			cls += " add"; marker = "+"; code = line.slice(1);
-		} else if (line.startsWith("-")) {
-			cls += " del"; marker = "−"; code = line.slice(1);
+			cls += " hunk";
+			marker = "@";
+			const hunkMatch = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+			if (hunkMatch) {
+				oldLn = Number.parseInt(hunkMatch[1], 10);
+				newLn = Number.parseInt(hunkMatch[2], 10);
+			}
+		} else if (line.startsWith("+") && !line.startsWith("+++")) {
+			cls += " add";
+			marker = "+";
+			code = line.slice(1);
+			newNum = newLn > 0 ? String(newLn++) : "";
+		} else if (line.startsWith("-") && !line.startsWith("---")) {
+			cls += " del";
+			marker = "−";
+			code = line.slice(1);
+			oldNum = oldLn > 0 ? String(oldLn++) : "";
 		} else if (line.startsWith("+++") || line.startsWith("---")) {
-			code = line.slice(3);
+			cls += " file";
+			marker = "#";
+			code = line;
+		} else {
+			// Context line
+			if (oldLn > 0) oldNum = String(oldLn++);
+			if (newLn > 0) newNum = String(newLn++);
+			if (line.startsWith(" ")) code = line.slice(1);
 		}
+
 		const row = el("div", cls);
-		row.append(el("span", "", marker));
+		if (oldNum || newNum) {
+			const gutter = el("span", "gutter");
+			gutter.append(el("span", "ln old", oldNum), el("span", "ln new", newNum));
+			row.append(gutter);
+		} else {
+			row.append(el("span", "marker", marker));
+		}
 		row.append(el("span", "code", code));
 		box.append(row);
 	}
@@ -1788,9 +1825,21 @@ function renderMessage(message) {
 	if (role === "toolResult") {
 		const card = message.toolCallId ? toolCards.get(message.toolCallId) : undefined;
 		const output = textOf(message.content);
-		const diff = message.details && typeof message.details.diff === "string" ? message.details.diff : undefined;
+		let diff = message.details && typeof message.details.diff === "string" ? message.details.diff : undefined;
+		let displayOutput = output;
+
+		// If no explicit details.diff, detect unified git diff embedded in text output (e.g. from bash/ipython/patch)
+		if (!diff && output && (output.includes("diff --git") || (output.includes("--- a/") && output.includes("+++ b/")) || output.includes("@@ -"))) {
+			const match = output.match(/(?:^|\n)(?:diff --git|--- [ab]\/|@@ -\d+)/);
+			if (match && match.index !== undefined) {
+				const startPos = match.index === 0 ? 0 : match.index + 1;
+				displayOutput = output.slice(0, startPos).trim();
+				diff = output.slice(startPos).trim();
+			}
+		}
+
 		if (card) {
-			if (output) card.out.textContent += (card.out.textContent ? "\n" : "") + output;
+			if (displayOutput) card.out.textContent += (card.out.textContent ? "\n" : "") + displayOutput;
 			card.status.textContent = message.isError ? "error" : "done";
 			card.status.className = "status " + (message.isError ? "error" : "ok");
 			if (diff) renderEditDiff(card, diff);
@@ -3001,11 +3050,20 @@ function handleSessionEvent(event) {
 			const card = toolCards.get(event.toolCallId);
 			if (card) {
 				const output = textOf(event.result?.content);
+				let diff = event.result?.details?.diff;
+				let displayOutput = output;
+				if (!diff && output && (output.includes("diff --git") || (output.includes("--- a/") && output.includes("+++ b/")) || output.includes("@@ -"))) {
+					const match = output.match(/(?:^|\n)(?:diff --git|--- [ab]\/|@@ -\d+)/);
+					if (match && match.index !== undefined) {
+						const startPos = match.index === 0 ? 0 : match.index + 1;
+						displayOutput = output.slice(0, startPos).trim();
+						diff = output.slice(startPos).trim();
+					}
+				}
 				if (card.pending) { card.out.textContent += card.pending; card.pending = ""; }
-				if (output) card.out.textContent += (card.out.textContent ? "\n" : "") + output;
+				if (displayOutput) card.out.textContent += (card.out.textContent ? "\n" : "") + displayOutput;
 				card.status.textContent = event.isError ? "error" : "done";
 				card.status.className = "status " + (event.isError ? "error" : "ok");
-				const diff = event.result?.details?.diff;
 				if (typeof diff === "string") renderEditDiff(card, diff);
 				scroll();
 			}
