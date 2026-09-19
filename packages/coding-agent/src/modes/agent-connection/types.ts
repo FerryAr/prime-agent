@@ -358,6 +358,8 @@ export interface AgentConnectionState {
 	contextUsage: SessionStats["contextUsage"];
 	/** One-line recent-work recap for the prompt UI. */
 	recap?: string;
+	/** Whole-session own usage and spend in USD. */
+	usage?: SessionUsageSummary;
 }
 
 export interface AgentConnectionSlashCommand {

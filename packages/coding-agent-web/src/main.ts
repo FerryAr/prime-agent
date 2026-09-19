@@ -241,6 +241,24 @@ async function getSessionSnapshot(
 				snapshot.state.cwd = recordedCwd;
 			}
 		}
+		if (snapshot.state && !snapshot.state.usage && Array.isArray(snapshot.messages)) {
+			let inputTokens = 0;
+			let outputTokens = 0;
+			let cost = 0;
+			for (const msg of snapshot.messages) {
+				const u = (msg as any)?.usage;
+				if (u) {
+					inputTokens += (u.input || 0) + (u.cacheRead || 0) + (u.cacheWrite || 0);
+					outputTokens += (u.output || 0);
+					if (u.cost) {
+						cost += typeof u.cost === "number" ? u.cost : (u.cost.total || 0);
+					}
+				}
+			}
+			if (inputTokens > 0 || outputTokens > 0 || cost > 0) {
+				(snapshot.state as any).usage = { inputTokens, outputTokens, cost };
+			}
+		}
 		return { ...snapshot, children };
 	} finally {
 		session.pendingSnapshots--;

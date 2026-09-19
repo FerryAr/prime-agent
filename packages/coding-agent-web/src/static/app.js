@@ -1098,9 +1098,38 @@ function renderUnifiedDiff(container, text) {
 	scroll();
 }
 
+function countDiffStats(diffText) {
+	let added = 0;
+	let removed = 0;
+	for (const rawLine of (diffText || "").split("\n")) {
+		const line = rawLine.replace(/\x1B\[[0-9;]*[a-zA-Z]/g, "");
+		if (line.startsWith("+") && !line.startsWith("+++")) added++;
+		else if (line.startsWith("-") && !line.startsWith("---")) removed++;
+	}
+	return { added, removed };
+}
+
 function renderEditDiff(card, diffText) {
 	const existing = card.root.querySelector(".diff");
 	if (existing) existing.remove();
+
+	// Add or update +N -M diff stats badge in tool card header
+	const existingStats = card.root.querySelector(".head .diff-stats");
+	if (existingStats) existingStats.remove();
+
+	const stats = countDiffStats(diffText);
+	if (stats.added > 0 || stats.removed > 0) {
+		const badge = el("span", "diff-stats");
+		if (stats.added > 0) badge.append(el("span", "diff-add", `+${stats.added}`));
+		if (stats.removed > 0) badge.append(el("span", "diff-del", `-${stats.removed}`));
+		const nameEl = card.root.querySelector(".head .name");
+		if (nameEl && nameEl.nextSibling) {
+			card.root.querySelector(".head").insertBefore(badge, nameEl.nextSibling);
+		} else {
+			card.root.querySelector(".head")?.append(badge);
+		}
+	}
+
 	renderUnifiedDiff(card.root, diffText);
 }
 function entryForDiff(entry) {
@@ -1824,11 +1853,36 @@ function renderMessage(message) {
 	}
 	if (role === "toolResult") {
 		const card = message.toolCallId ? toolCards.get(message.toolCallId) : undefined;
-		const output = textOf(message.content);
-		let diff = message.details && typeof message.details.diff === "string" ? message.details.diff : undefined;
+		let output = textOf(message.content);
+		if (!output && message.details && typeof message.details.stdout === "string") {
+			output = message.details.stdout;
+		}
+		let diff = undefined;
 		let displayOutput = output;
 
-		// If no explicit details.diff, detect unified git diff embedded in text output (e.g. from bash/ipython/patch)
+		if (message.details) {
+			if (typeof message.details.diff === "string" && message.details.diff.trim()) {
+				diff = message.details.diff;
+			} else if (Array.isArray(message.details.diffs) && message.details.diffs.length > 0) {
+				const chunks = [];
+				for (const d of message.details.diffs) {
+					if (typeof d.diff === "string") {
+						chunks.push(d.diff);
+					} else if (d.path && (d.oldStr !== undefined || d.newStr !== undefined)) {
+						const filePath = d.path;
+						const oldLines = d.oldStr ? d.oldStr.split("\n") : [];
+						const newLines = d.newStr ? d.newStr.split("\n") : [];
+						const header = `diff --git a/${filePath} b/${filePath}\n--- a/${filePath}\n+++ b/${filePath}\n@@ -1,${oldLines.length} +1,${newLines.length} @@`;
+						const delLines = oldLines.map((l) => `-${l}`).join("\n");
+						const addLines = newLines.map((l) => `+${l}`).join("\n");
+						chunks.push([header, delLines, addLines].filter(Boolean).join("\n"));
+					}
+				}
+				if (chunks.length > 0) diff = chunks.join("\n");
+			}
+		}
+
+		// If no explicit diff, detect unified git diff embedded in text output (e.g. from bash/ipython/patch)
 		if (!diff && output && (output.includes("diff --git") || (output.includes("--- a/") && output.includes("+++ b/")) || output.includes("@@ -"))) {
 			const match = output.match(/(?:^|\n)(?:diff --git|--- [ab]\/|@@ -\d+)/);
 			if (match && match.index !== undefined) {
@@ -2388,6 +2442,23 @@ function refreshHeader(state) {
 	const percent = state?.contextUsage?.percent;
 	$("ctxChip").textContent = percent == null ? "" : `ctx ${percent}%`;
 	$("ctxChip").classList.toggle("hidden", percent == null);
+
+	const costChip = $("costChip");
+	if (costChip) {
+		const usage = state?.usage;
+		if (usage && (usage.cost > 0 || usage.inputTokens > 0 || usage.outputTokens > 0)) {
+			const costStr = typeof usage.cost === "number" && usage.cost > 0
+				? `$${usage.cost < 0.01 ? usage.cost.toFixed(4) : usage.cost.toFixed(2)}`
+				: "";
+			const totalTokens = (usage.inputTokens || 0) + (usage.outputTokens || 0);
+			const tokensStr = totalTokens >= 1000 ? `${Math.round(totalTokens / 1000)}k` : String(totalTokens);
+			costChip.textContent = costStr ? `${costStr} (${tokensStr})` : `${tokensStr} tok`;
+			costChip.title = `Total session spend: ${costStr || "$0.00"} · In: ${(usage.inputTokens || 0).toLocaleString()} · Out: ${(usage.outputTokens || 0).toLocaleString()}`;
+			costChip.classList.remove("hidden");
+		} else {
+			costChip.classList.add("hidden");
+		}
+	}
 
 	const cwd = state?.cwd || active?.cwd;
 	const cwdChip = $("cwdChip");
@@ -4855,7 +4926,7 @@ $("thinking").addEventListener("change", async (event) => {
 // Startup self-audit: if the served HTML is older/newer than this script, wired
 // controls go missing and listeners would throw mid-file, killing everything after.
 // Fail loudly and name the missing elements instead.
-const WIRED_IDS = ["brandHome", "brandMini", "browseBtn", "chatCol", "composer", "cwdChip", "subagentChip", "goalBanner", "goalChip", "goalClearBtn", "goalEditBtn", "goalPauseBtn", "goalToggleBtn", "jumpBtn", "loginForm", "logoutBtn", "menuAsk", "menuChangePassword", "menuClone", "menuCompact", "menuFork", "menuGoal", "menuPanel", "menuRefine", "menuReload", "menuThinking", "menuToolCalls", "modelBtn", "modelSearch", "moreBtn", "navBtn", "panelClose", "scrim", "stopBtn", "thinking", "welcomeNew"];
+const WIRED_IDS = ["brandHome", "brandMini", "browseBtn", "chatCol", "composer", "costChip", "cwdChip", "subagentChip", "goalBanner", "goalChip", "goalClearBtn", "goalEditBtn", "goalPauseBtn", "goalToggleBtn", "jumpBtn", "loginForm", "logoutBtn", "menuAsk", "menuChangePassword", "menuClone", "menuCompact", "menuFork", "menuGoal", "menuPanel", "menuRefine", "menuReload", "menuThinking", "menuToolCalls", "modelBtn", "modelSearch", "moreBtn", "navBtn", "panelClose", "scrim", "stopBtn", "thinking", "welcomeNew"];
 const missingWired = WIRED_IDS.filter((id) => !document.getElementById(id));
 if (missingWired.length) {
 	console.error("Prime Agent web: HTML/JS version mismatch — missing #" + missingWired.join(", #") + ". Hard reload the page.");

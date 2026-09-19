@@ -566,7 +566,10 @@ select#thinking:disabled, .selectbtn:disabled, .iconbtn:disabled { opacity: 0.4;
 }
 
 /* -------------------------------------------------------------- transcript */
-#transcript { flex: 1; overflow-y: auto; padding: 20px 22px 26px; display: flex; flex-direction: column; gap: 12px; min-width: 0; scrollbar-gutter: stable; }
+#transcript {
+	flex: 1; overflow-y: auto; overflow-x: hidden; padding: 20px 22px 26px;
+	display: flex; flex-direction: column; gap: 12px; min-width: 0; scrollbar-gutter: stable;
+}
 @keyframes fadeUp { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 .bubble, .card, .thinking, .sideq, .notice {
 	animation: fadeUp 0.18s ease;
@@ -580,7 +583,7 @@ select#thinking:disabled, .selectbtn:disabled, .iconbtn:disabled { opacity: 0.4;
 	min-width: 0;
 }
 .card .head { min-width: 0; }
-.card .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card .name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .user {
 	align-self: flex-end; border: 1px solid rgba(76, 141, 255, 0.4);
 	background: linear-gradient(135deg, rgba(76, 141, 255, 0.2), rgba(76, 141, 255, 0.08));
@@ -642,6 +645,7 @@ select#thinking:disabled, .selectbtn:disabled, .iconbtn:disabled { opacity: 0.4;
 .card {
 	align-self: stretch; border: 1px solid var(--border); border-radius: var(--radius);
 	background: var(--bg-2); padding: 9px 12px; font-family: var(--mono); font-size: 12px;
+	min-width: 0; max-width: 100%;
 }
 .card .head {
 	display: flex; gap: 8px; margin-bottom: 0; align-items: baseline;
@@ -656,7 +660,10 @@ select#thinking:disabled, .selectbtn:disabled, .iconbtn:disabled { opacity: 0.4;
 .card.collapsed .chev { transform: rotate(-90deg); }
 .card.collapsed .out, .card.collapsed .diff { display: none; }
 .card.collapsed .head { margin-bottom: 0; }
-.card pre { margin: 6px 0 0; white-space: pre-wrap; word-break: break-word; color: #b6c2cf; }
+.card pre {
+	margin: 6px 0 0; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere;
+	color: #b6c2cf; overflow-x: auto; max-width: 100%;
+}
 
 .toolicon {
 	flex: none; display: inline-flex; align-items: center; justify-content: center;
@@ -1355,6 +1362,7 @@ select#thinking:disabled, .selectbtn:disabled, .iconbtn:disabled { opacity: 0.4;
 	border-radius: 8px;
 	margin-top: 8px;
 	overflow-x: auto;
+	max-width: 100%;
 	box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.4);
 }
 .diff .row {
@@ -2192,3 +2200,41 @@ select#thinking:disabled, .selectbtn:disabled, .iconbtn:disabled { opacity: 0.4;
 	font-size: 11px;
 	color: #6e7681;
 }
+
+.chip.cost {
+	background: rgba(227, 179, 65, 0.12);
+	color: #e3b341;
+	border: 1px solid rgba(227, 179, 65, 0.35);
+	font-family: var(--mono);
+	font-size: 11px;
+}
+
+.card .head .diff-stats {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	flex: none;
+	font-family: var(--mono);
+	font-size: 11px;
+	font-weight: 600;
+	margin-left: 8px;
+	padding: 1px 6px;
+	border-radius: 4px;
+	background: rgba(0, 0, 0, 0.25);
+	border: 1px solid rgba(255, 255, 255, 0.08);
+	user-select: none;
+}
+
+.session-spend {
+	font-family: var(--mono);
+	font-size: 10.5px;
+	color: #e3b341;
+	background: rgba(227, 179, 65, 0.1);
+	border: 1px solid rgba(227, 179, 65, 0.3);
+	border-radius: 4px;
+	padding: 0 5px;
+	flex: none;
+	font-weight: 600;
+}
+.card .head .diff-stats .diff-add { color: #7ee2b8; }
+.card .head .diff-stats .diff-del { color: #ffb1a9; }
