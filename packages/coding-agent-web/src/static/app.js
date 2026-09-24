@@ -112,7 +112,7 @@ const transcript = $("transcript"), input = $("input");
 // ---------------------------------------------------------------------------
 
 const INLINE_MD =
-	/(\*\*\*(?!\s)((?:[^*]|\*(?!\*\*))+?)(?<!\s)\*\*\*)|(\*\*(?!\s)((?:[^*]|\*(?!\*))+?)(?<!\s)\*\*|__(?!\s)((?:[^_]|_(?!_))+?)(?<!\s)__)|(?:\*([^\s*](?:[^*]*?[^\s*])?)\*|\b_([^\s_](?:[^_]*?[^\s_])?)_\b)|(`([^`\n]+?)`)|(\[([^\]\n]+?)\]\((https?:\/\/[^)\s]+?)\))|(~~(?!\s)((?:[^~]|~(?!~))+?)(?<!\s)~~)|(https?:\/\/[^\s<>"')]+)/g;
+	/(\*\*\*(?!\s)((?:[^*]|\*(?!\*\*))+?)(?<!\s)\*\*\*)|(\*\*(?!\s)((?:[^*]|\*(?!\*))+?)(?<!\s)\*\*|__(?!\s)((?:[^_]|_(?!_))+?)(?<!\s)__)|(?:\*([^\s*](?:[^*]*?[^\s*])?)\*|\b_([^\s_](?:[^_]*?[^\s_])?)_\b)|(`([^`\n]+?)`)|(\[([^\]\n]+?)\]\((https?:\/\/[^)\s]+?)\))|(~~(?!\s)((?:[^~]|~(?!~))+?)(?<!\s)~~)|(https?:\/\/[^\s<>"')]+)|(\$((?!\$)[^\n$]+?)\$)/g;
 
 function renderInline(parent, text) {
 	if (!text) return;
@@ -163,6 +163,19 @@ function renderInline(parent, text) {
 			anchor.rel = "noopener noreferrer";
 			parent.append(anchor);
 			if (trailing) parent.append(document.createTextNode(trailing));
+		} else if (match[16]) {
+			const mathText = match[17];
+			const span = el("span", "math-inline");
+			if (typeof katex !== "undefined" && typeof katex.renderToString === "function") {
+				try {
+					span.innerHTML = katex.renderToString(mathText, { displayMode: false, throwOnError: false });
+				} catch {
+					span.textContent = "$" + mathText + "$";
+				}
+			} else {
+				span.textContent = "$" + mathText + "$";
+			}
+			parent.append(span);
 		}
 		last = regex.lastIndex;
 	}
@@ -243,8 +256,54 @@ function splitTableRow(line) {
 	return cells;
 }
 
+try {
+	if (typeof marked !== "undefined" && typeof markedKatex !== "undefined") {
+		marked.use(markedKatex({ throwOnError: false, nonStandard: true }));
+	}
+} catch (e) {
+	console.warn("Failed to initialize marked-katex extension:", e);
+}
+
 function renderMarkdown(raw) {
 	if (typeof raw !== "string") raw = String(raw ?? "");
+	if (!raw.trim()) return document.createDocumentFragment();
+
+	// Primary modern pipeline: marked + KaTeX extension
+	if (typeof marked !== "undefined" && typeof marked.parse === "function" && typeof document !== "undefined" && typeof document.createElement === "function") {
+		try {
+			const template = document.createElement("template");
+			if (template.content) {
+				template.innerHTML = marked.parse(raw);
+				// Wrap code blocks with copy bar and styled header
+				for (const pre of template.content.querySelectorAll("pre")) {
+					if (pre.parentElement && pre.parentElement.classList.contains("codeblock")) continue;
+					const code = pre.querySelector("code");
+					const langMatch = (code?.className || "").match(/language-(\S+)/);
+					const lang = langMatch ? langMatch[1] : "";
+					const codeText = pre.textContent || "";
+					const enhanced = codeBlock(lang, codeText);
+					pre.replaceWith(enhanced);
+				}
+
+				// Wrap tables with horizontal scroll container and apply styling classes
+				for (const table of template.content.querySelectorAll("table")) {
+					if (!table.parentElement || !table.parentElement.classList.contains("md-table-wrap")) {
+						table.classList.add("md-table");
+						for (const th of table.querySelectorAll("th")) th.classList.add("md-th");
+						for (const td of table.querySelectorAll("td")) td.classList.add("md-td");
+						const wrap = el("div", "md-table-wrap");
+						table.replaceWith(wrap);
+						wrap.append(table);
+					}
+				}
+
+				return template.content;
+			}
+		} catch (err) {
+			console.warn("marked.parse error, falling back to internal parser:", err);
+		}
+	}
+
 	const fragment = document.createDocumentFragment();
 	const lines = raw.replace(/\r\n?/g, "\n").split("\n");
 	let index = 0;
@@ -262,6 +321,40 @@ function renderMarkdown(raw) {
 		const line = lines[index];
 
 		if (line.trim() === "") { flushParagraph(paragraphBuffer); index += 1; continue; }
+
+		if (/^\s*\$\$/.test(line)) {
+			flushParagraph(paragraphBuffer);
+			const mathLines = [];
+			const trimmed = line.trim();
+			if (trimmed.length > 2 && trimmed.endsWith("$$")) {
+				// Single-line block math: $$...$$
+				mathLines.push(trimmed.slice(2, -2).trim());
+				index += 1;
+			} else {
+				// Multi-line block math
+				const firstLineRest = trimmed.slice(2).trim();
+				if (firstLineRest) mathLines.push(firstLineRest);
+				index += 1;
+				while (index < lines.length && !/^\s*\$\$\s*$/.test(lines[index])) {
+					mathLines.push(lines[index]);
+					index += 1;
+				}
+				if (index < lines.length) index += 1;
+			}
+			const mathCode = mathLines.join("\n").trim();
+			const mathNode = el("div", "math-block");
+			if (typeof katex !== "undefined" && typeof katex.renderToString === "function") {
+				try {
+					mathNode.innerHTML = katex.renderToString(mathCode, { displayMode: true, throwOnError: false });
+				} catch {
+					mathNode.textContent = "$$" + mathCode + "$$";
+				}
+			} else {
+				mathNode.textContent = "$$" + mathCode + "$$";
+			}
+			fragment.append(mathNode);
+			continue;
+		}
 
 		const fence = line.match(/^ {0,3}```\s*(\S*)/);
 		if (fence) {
@@ -414,16 +507,30 @@ function renderMarkdown(raw) {
 		if (line.includes("|") && index + 1 < lines.length && isTableSeparator(lines[index + 1])) {
 			flushParagraph(paragraphBuffer);
 			const header = splitTableRow(line);
+			const sepCells = splitTableRow(lines[index + 1]);
+			const alignments = sepCells.map((c) => {
+				const t = (c ?? "").trim();
+				if (t.startsWith(":") && t.endsWith(":")) return "center";
+				if (t.endsWith(":")) return "right";
+				if (t.startsWith(":")) return "left";
+				return "";
+			});
 			index += 2;
 			const table = el("table", "md-table");
 			const head_ = el("tr", "md-tr-head");
-			for (const cell of header) { const th = el("th", "md-th"); renderInline(th, cell); head_.append(th); }
+			for (let c = 0; c < header.length; c++) {
+				const th = el("th", "md-th");
+				if (alignments[c]) { if (th.style) th.style.textAlign = alignments[c]; th.align = alignments[c]; }
+				renderInline(th, header[c]);
+				head_.append(th);
+			}
 			table.append(head_);
 			while (index < lines.length && lines[index].includes("|") && lines[index].trim() !== "") {
 				const row = el("tr", "md-tr");
 				const cells = splitTableRow(lines[index]);
 				for (let c = 0; c < header.length; c++) {
 					const td = el("td", "md-td");
+					if (alignments[c]) { if (td.style) td.style.textAlign = alignments[c]; td.align = alignments[c]; }
 					renderInline(td, cells[c] ?? "");
 					row.append(td);
 				}
@@ -444,9 +551,78 @@ function renderMarkdown(raw) {
 }
 
 function renderMarkdownInto(node, raw) {
-	const timestamp = node.querySelector(".msg-time");
+	const footer = node.querySelector(".msg-footer") || node.querySelector(".user-msg-footer") || node.querySelector(".msg-time");
 	node.replaceChildren(renderMarkdown(raw));
-	if (timestamp) node.append(timestamp);
+	if (footer) node.append(footer);
+}
+
+const COPY_SVG = '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+
+async function copyTextToClipboard(text, button, defaultLabel = "Copy") {
+	try {
+		if (navigator?.clipboard?.writeText) {
+			await navigator.clipboard.writeText(text);
+		} else {
+			const ta = document.createElement("textarea");
+			ta.value = text;
+			ta.style.position = "fixed";
+			ta.style.opacity = "0";
+			document.body.appendChild(ta);
+			ta.select();
+			document.execCommand("copy");
+			ta.remove();
+		}
+		if (button) {
+			button.classList.add("copied");
+			const span = button.querySelector("span");
+			if (span) span.textContent = "Copied!";
+			setTimeout(() => {
+				button.classList.remove("copied");
+				if (span) span.textContent = defaultLabel;
+			}, 1500);
+		}
+	} catch (err) {
+		console.error("Failed to copy:", err);
+	}
+}
+
+function createCopyButton(getText) {
+	const btn = el("button", "msg-action-btn copy-btn");
+	btn.type = "button";
+	btn.title = "Copy text to clipboard";
+	btn.innerHTML = `${COPY_SVG} <span>Copy</span>`;
+	btn.onclick = async (e) => {
+		e.stopPropagation();
+		const text = typeof getText === "function" ? getText() : (getText || "");
+		if (!text) return;
+		await copyTextToClipboard(text, btn, "Copy");
+	};
+	return btn;
+}
+
+function attachMessageFooter(bubble, getText, timestamp = Date.now(), extraActions = [], ttftMs = 0) {
+	let footer = bubble.querySelector(".msg-footer") || bubble.querySelector(".user-msg-footer");
+	if (!footer) {
+		footer = el("div", bubble.classList.contains("user") ? "msg-footer user-msg-footer" : "msg-footer");
+		bubble.append(footer);
+	} else {
+		footer.replaceChildren();
+	}
+	const actions = el("div", "msg-actions");
+	actions.append(createCopyButton(getText));
+	const effectiveTtft = Number(ttftMs || bubble?.dataset?.ttft || 0);
+	if (effectiveTtft > 0) {
+		const label = effectiveTtft >= 1000 ? `${(effectiveTtft / 1000).toFixed(1)}s` : `${Math.round(effectiveTtft)}ms`;
+		const ttftBadge = el("span", "msg-action-badge ttft", `⚡ ${label}`);
+		ttftBadge.title = `Response latency / TTFT: ${Math.round(effectiveTtft)}ms`;
+		actions.append(ttftBadge);
+	}
+	for (const act of extraActions) {
+		if (act) actions.append(act);
+	}
+	footer.append(actions);
+	addTimestamp(footer, timestamp);
+	return footer;
 }
 
 function timestampDate(value) {
@@ -478,6 +654,72 @@ function el(tag, className, text) {
 	return node;
 }
 
+function parseDetailedError(error, stopReason) {
+	let raw = "";
+	if (typeof error === "string") {
+		raw = error;
+	} else if (error && typeof error === "object") {
+		raw = error.message || error.error || JSON.stringify(error, null, 2);
+	} else {
+		raw = String(error || "Unknown error");
+	}
+
+	let title = "Error dari Model Provider";
+	let advice = "Gunakan menu Model untuk beralih ke model atau provider lain.";
+	let icon = "⚠️";
+
+	if (raw.includes("429") || /QUOTA_EXHAUSTED|RESOURCE_EXHAUSTED|rate limit/i.test(raw)) {
+		title = "Batas Kuota / Rate Limit Tercapai (429)";
+		advice = "Kuota model ini habis atau terkena pembatasan rate limit. Beralih ke model lain via menu Model atau tunggu reset kuota.";
+		icon = "⏳";
+	} else if (raw.includes("401") || /UNAUTHENTICATED|invalid api key|unauthorized/i.test(raw)) {
+		title = "Autentikasi Gagal (401)";
+		advice = "API Key provider tidak valid atau kadaluarsa. Periksa kredensial provider AI Anda di pengaturan.";
+		icon = "🔑";
+	} else if (/context.*exceeded|maximum context length|too many tokens/i.test(raw) || stopReason === "maxTokens") {
+		title = "Batas Konteks Penuh (Max Tokens)";
+		advice = "Panjang percakapan melebihi batas model. Gunakan tombol Compact atau buat sesi baru.";
+		icon = "📦";
+	} else if (raw.includes("503") || raw.includes("500") || /OVERLOADED|server error|internal error/i.test(raw)) {
+		title = "Server Provider Overloaded (5xx)";
+		advice = "Server provider AI sedang down atau mengalami beban tinggi. Coba beralih ke provider cadangan.";
+		icon = "💥";
+	} else if (raw.includes("400") || /INVALID_ARGUMENT|bad request/i.test(raw)) {
+		title = "Argumen Tidak Valid (400)";
+		advice = "Request ditolak provider. Coba ulangi prompt dengan kalimat yang lebih sederhana atau ganti model.";
+		icon = "🚫";
+	} else if (/failed to fetch|network error|connection error|fetch failed/i.test(raw)) {
+		title = "Koneksi Provider Terputus";
+		advice = "Tidak dapat tersambung ke endpoint API provider. Periksa jaringan internet atau reverse proxy Anda.";
+		icon = "🌐";
+	} else if (stopReason === "aborted") {
+		title = "Tugas Dibatalkan";
+		advice = "Eksekusi giliran dibatalkan oleh pengguna.";
+		icon = "🛑";
+	}
+	return { title, advice, raw, icon };
+}
+
+function createErrorCard(error, stopReason) {
+	const { title, advice, raw, icon } = parseDetailedError(error, stopReason);
+	const card = el("div", "card error-card");
+	const header = el("div", "error-card-header");
+	const iconEl = el("span", "error-card-icon", icon);
+	const titleEl = el("b", "error-card-title", title);
+	header.append(iconEl, titleEl);
+
+	const details = el("pre", "error-card-details");
+	const code = el("code", "", raw.length > 2500 ? raw.slice(0, 2500) + "... [truncated]" : raw);
+	details.append(code);
+
+	const adviceEl = el("div", "error-card-advice");
+	const em = el("i", "", advice);
+	adviceEl.append("💡 ", em);
+
+	card.append(header, details, adviceEl);
+	return card;
+}
+
 function formatDisplayPath(pathStr) {
 	if (!pathStr) return "";
 	const home = meta.home || "";
@@ -502,6 +744,27 @@ function fmtBytes(size) {
 	if (size < 1024) return `${size} B`;
 	if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
 	return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function formatTokens(tokens) {
+	const count = Number(tokens ?? 0);
+	if (!Number.isFinite(count) || count <= 0) return "0";
+	if (count >= 1_000_000_000) {
+		const b = count / 1_000_000_000;
+		const val = b < 10 ? b.toFixed(2) : b.toFixed(1);
+		return (val.includes(".") ? val.replace(/0+$/, "").replace(/\.$/, "") : val) + "b";
+	}
+	if (count >= 1_000_000) {
+		const m = count / 1_000_000;
+		const val = m < 10 ? m.toFixed(2) : m.toFixed(1);
+		return (val.includes(".") ? val.replace(/0+$/, "").replace(/\.$/, "") : val) + "m";
+	}
+	if (count >= 1_000) {
+		const k = count / 1_000;
+		const val = k < 10 ? k.toFixed(2) : k.toFixed(1);
+		return (val.includes(".") ? val.replace(/0+$/, "").replace(/\.$/, "") : val) + "k";
+	}
+	return String(Math.round(count));
 }
 
 async function api(path, options = {}) {
@@ -589,18 +852,27 @@ $("logoutBtn").addEventListener("click", async () => {
 // Generic modal
 // ---------------------------------------------------------------------------
 
-function openModal({ title, message, build }) {
+function openModal({ title, message, build, wide = false, className = "" }) {
 	const overlay = $("dialogOverlay");
+	const dialog = overlay.querySelector(".dialog");
 	$("dialogTitle").textContent = title;
 	$("dialogMessage").textContent = message ?? "";
 	const body = $("dialogBody"), actions = $("dialogActions");
 	body.replaceChildren();
 	actions.replaceChildren();
+	if (dialog) {
+		dialog.classList.toggle("dialog-wide", Boolean(wide));
+		if (className) dialog.classList.add(...className.split(" ").filter(Boolean));
+	}
 	const onKey = (event) => {
 		if (event.key === "Escape" && !overlay.classList.contains("hidden")) close();
 	};
 	const close = () => {
 		overlay.classList.add("hidden");
+		if (dialog) {
+			dialog.classList.remove("dialog-wide");
+			if (className) dialog.classList.remove(...className.split(" ").filter(Boolean));
+		}
 		document.removeEventListener("keydown", onKey);
 	};
 	document.addEventListener("keydown", onKey);
@@ -608,7 +880,7 @@ function openModal({ title, message, build }) {
 		if (event.target === overlay) close();
 	};
 	build(body, actions, close);
-	if (!actions.querySelector("#dialogCancel")) {
+	if (!actions.querySelector("#dialogCancel") && !actions.querySelector(".dialog-close-btn")) {
 		const cancel = el("button", "", "Cancel");
 		cancel.id = "dialogCancel";
 		cancel.onclick = close;
@@ -898,7 +1170,11 @@ function assistantBubble() {
 	hideTyping();
 	if (!run?.assistant) {
 		const bubble = el("div", "bubble assistant md");
-		addTimestamp(bubble);
+		if (typeof attachMessageFooter === "function") {
+			attachMessageFooter(bubble, () => run?.assistantRaw || bubble.innerText || "", Date.now());
+		} else if (typeof addTimestamp === "function") {
+			addTimestamp(bubble);
+		}
 		appendNode(bubble);
 		if (run) {
 			run.assistant = bubble;
@@ -913,7 +1189,12 @@ function assistantBubble() {
 
 function appendAssistantDelta(delta) {
 	const state = ensureRun();
+	if (!state.firstTokenAt && state.startedAt) {
+		state.firstTokenAt = Date.now();
+		state.ttftMs = Math.max(1, state.firstTokenAt - state.startedAt);
+	}
 	const bubble = assistantBubble();
+	if (state.ttftMs) bubble.dataset.ttft = String(state.ttftMs);
 	bubble.classList.add("streaming");
 	state.assistantRaw += delta ?? "";
 	const now = Date.now();
@@ -921,6 +1202,11 @@ function appendAssistantDelta(delta) {
 		state.renderedAt = now;
 		state.streamingRendered = true;
 		renderMarkdownInto(bubble, state.assistantRaw);
+		if (typeof speedDisplayEnabled !== "undefined" && speedDisplayEnabled && state.startedAt && state.assistantRaw.length > 20 && typeof renderSpeedChip === "function") {
+			const estTokens = Math.max(1, Math.round(state.assistantRaw.length / 4));
+			const durationSec = Math.max(0.1, (now - state.startedAt) / 1000);
+			renderSpeedChip(estTokens / durationSec);
+		}
 		scroll();
 	}
 }
@@ -928,7 +1214,11 @@ function appendAssistantDelta(delta) {
 function flushAssistantMarkdown() {
 	if (!run?.assistant) return;
 	run.assistant.classList.remove("streaming");
+	if (run.ttftMs) run.assistant.dataset.ttft = String(run.ttftMs);
 	renderMarkdownInto(run.assistant, run.assistantRaw);
+	if (typeof attachMessageFooter === "function") {
+		attachMessageFooter(run.assistant, () => run.assistantRaw, Date.now(), [], run.ttftMs);
+	}
 	scroll();
 }
 
@@ -1486,15 +1776,19 @@ function renderSubagentMessagesList(container, messages) {
 }
 
 function openSubagentHistoryModal(name, status, model, label, messages) {
+	const statusBadge = (status || "done").toUpperCase();
 	openModal({
-		title: `Subagent: ${name} (${(status || "done").toUpperCase()})`,
-		message: label ? `Task: ${label}` : `Model: ${model || "default"}`,
+		title: `Subagent: ${name}`,
+		message: `${label ? `Task: ${label} · ` : ""}Model: ${model || "default"} · [${statusBadge}]`,
+		wide: true,
+		className: "dialog-subagent-modal",
 		build(body, actions, close) {
 			const modalContainer = el("div", "subagent-modal-transcript");
 			renderSubagentMessagesList(modalContainer, messages);
 			body.append(modalContainer);
 
-			const closeBtn = el("button", "", "Close");
+			const closeBtn = el("button", "primarybtn dialog-close-btn", "Close");
+			closeBtn.id = "dialogCancel";
 			closeBtn.type = "button";
 			closeBtn.onclick = close;
 			actions.append(closeBtn);
@@ -1807,7 +2101,6 @@ function renderMessage(message) {
 		const msgText = el("div", "user-msg-text", text);
 		bubble.append(msgText);
 
-		const footer = el("div", "user-msg-footer");
 		const forkBtn = el("button", "msg-action-btn fork-btn", "");
 		forkBtn.type = "button";
 		forkBtn.title = "Fork conversation from this prompt";
@@ -1816,11 +2109,28 @@ function renderMessage(message) {
 			e.stopPropagation();
 			openForkModalForMessage(text, message.timestamp);
 		};
-		footer.append(forkBtn);
-		addTimestamp(footer, message.timestamp);
-		bubble.append(footer);
-
-		addTimestamp(bubble, message.timestamp);
+		if (Array.isArray(message.content)) {
+			const images = message.content.filter((p) => p && p.type === "image");
+			if (images.length > 0) {
+				const imgWrap = el("div", "user-msg-images");
+				for (const imgPart of images) {
+					const imgEl = el("img", "user-msg-img");
+					const mime = imgPart.mimeType || "image/png";
+					imgEl.src = imgPart.data ? `data:${mime};base64,${imgPart.data}` : (imgPart.url || "");
+					imgEl.alt = "Attached image";
+					imgWrap.append(imgEl);
+				}
+				bubble.insertBefore(imgWrap, bubble.firstChild);
+			}
+		}
+		if (typeof attachMessageFooter === "function") {
+			attachMessageFooter(bubble, () => text, message.timestamp, [forkBtn]);
+		} else {
+			const footer = el("div", "user-msg-footer");
+			footer.append(forkBtn);
+			if (typeof addTimestamp === "function") addTimestamp(footer, message.timestamp);
+			bubble.append(footer);
+		}
 		appendNode(bubble);
 		return;
 	}
@@ -1834,8 +2144,15 @@ function renderMessage(message) {
 				// Render it as a thinking block so it stays neatly styled and obeys hide-thinking toggle!
 				const isPreToolPlanning = !hasFormalThinking && content.slice(i + 1).some((p) => p && p.type === "toolCall");
 				const block = el("div", isPreToolPlanning ? "thinking md" : "bubble assistant md");
-				addTimestamp(block, message.timestamp);
-				renderMarkdownInto(block, part.text);
+				block.dataset.raw = part.text;
+				const ttft = Number(message.ttftMs || message.details?.ttftMs || message.timing?.ttftMs || 0);
+				if (ttft) block.dataset.ttft = String(ttft);
+				if (typeof renderMarkdownInto === "function") renderMarkdownInto(block, part.text);
+				if (typeof attachMessageFooter === "function") {
+					attachMessageFooter(block, () => block.dataset.raw || part.text || "", message.timestamp, [], ttft);
+				} else if (typeof addTimestamp === "function") {
+					addTimestamp(block, message.timestamp);
+				}
 				appendNode(block);
 			}
 			else if (part.type === "thinking" && part.thinking) {
@@ -1848,7 +2165,9 @@ function renderMessage(message) {
 				toolCard(part.id, part.name, JSON.stringify(part.arguments ?? {}, null, 2), message.timestamp);
 			}
 		}
-		if (message.errorMessage) appendNode(el("div", "card", message.errorMessage));
+		if (message.errorMessage || message.stopReason === "error") {
+			appendNode(createErrorCard(message.errorMessage || "Model request error", message.stopReason));
+		}
 		return;
 	}
 	if (role === "toolResult") {
@@ -1898,21 +2217,33 @@ function renderMessage(message) {
 			card.status.className = "status " + (message.isError ? "error" : "ok");
 			if (diff) renderEditDiff(card, diff);
 
-			// Detect if this toolResult returned an RLMSpawnHandle, and anchor the subagent card directly here
+			// Detect if this toolResult returned RLMSpawnHandle(s), and anchor cards for all spawned children
 			if (output && output.includes("RLMSpawnHandle(") && typeof renderSubagentCard === "function") {
-				const idMatch = output.match(/rlm_child_id=['"]([^'"]+)['"]/);
-				const nameMatch = output.match(/name=['"]([^'"]+)['"]/);
-				const modelMatch = output.match(/model=['"]([^'"]+)['"]/);
-				const dirMatch = output.match(/session_dir=(?:PosixPath\()?['"]([^'"]+)['"]/);
-				if (idMatch && nameMatch) {
-					renderSubagentCard({
-						id: idMatch[1],
-						sessionName: nameMatch[1],
-						model: modelMatch ? modelMatch[1] : "",
-						sessionDir: dirMatch ? dirMatch[1] : "",
-						status: "running",
-						timestamp: message.timestamp
-					}, message.timestamp, card.root);
+				const handleRegex = /RLMSpawnHandle\(([\s\S]*?)\)/g;
+				let handleMatch;
+				while ((handleMatch = handleRegex.exec(output)) !== null) {
+					const block = handleMatch[1];
+					const id = block.match(/rlm_child_id=['"]([^'"]+)['"]/)?.[1];
+					const name = block.match(/name=['"]([^'"]+)['"]/)?.[1];
+					const model = block.match(/model=['"]([^'"]+)['"]/)?.[1] || "";
+					const dir = block.match(/session_dir=(?:PosixPath\()?['"]([^'"]+)['"]/)?.[1] || "";
+					if (id && name) {
+						const childObj = {
+							id,
+							sessionName: name,
+							model,
+							sessionDir: dir,
+							status: "running",
+							timestamp: message.timestamp
+						};
+						renderSubagentCard(childObj, message.timestamp, card.root);
+						if (active) {
+							if (!active.runningSubagents) active.runningSubagents = new Map();
+							active.runningSubagents.set(id, childObj);
+							active.hasRunningRlmChildren = true;
+							updateSubagentIndicator();
+						}
+					}
 				}
 			}
 		} else if (diff) {
@@ -2062,6 +2393,19 @@ function renderMessages(messages) {
 
 	const list = Array.isArray(messages) ? messages : [];
 	fullSessionMessages = list;
+
+	// Populate TTFT / response latency from elapsed turn intervals
+	let lastTimestamp = 0;
+	for (const msg of list) {
+		const ts = Number(msg.timestamp || 0);
+		if (msg.role === "assistant" && lastTimestamp > 0 && ts > lastTimestamp && !msg.ttftMs) {
+			const elapsed = ts - lastTimestamp;
+			if (elapsed >= 10 && elapsed <= 180000) {
+				msg.ttftMs = elapsed;
+			}
+		}
+		if (ts > 0) lastTimestamp = ts;
+	}
 
 	const boundaries = getTurnBoundaryIndices(list);
 	totalSessionTurns = boundaries.length;
@@ -2437,27 +2781,133 @@ function updateSubagentIndicator() {
 	}
 }
 
+
+let speedDisplayEnabled = typeof localStorage !== "undefined" ? localStorage.getItem("prime_speed_display") !== "0" : true;
+let speedStats = { tokens: 0, durationMs: 0, samples: 0, lastSpeed: 0 };
+let quotaParkCountdownTimer = null;
+
+function calculateSpeedFromMessages(messages) {
+	let tokens = 0;
+	let durationMs = 0;
+	let samples = 0;
+	let lastSpeed = 0;
+	const list = Array.isArray(messages) ? messages : [];
+	for (let i = 1; i < list.length; i++) {
+		const prev = list[i - 1];
+		const curr = list[i];
+		if (curr?.role === "assistant" || curr?.message?.role === "assistant") {
+			const u = curr.usage || curr.message?.usage;
+			const outTok = Number(u?.output ?? 0);
+			const tCurr = new Date(curr.timestamp || curr.message?.timestamp || 0).getTime();
+			const tPrev = new Date(prev.timestamp || prev.message?.timestamp || 0).getTime();
+			if (outTok > 0 && tCurr > tPrev) {
+				const delta = tCurr - tPrev;
+				if (delta >= 200 && delta <= 60000) {
+					tokens += outTok;
+					durationMs += delta;
+					samples++;
+					lastSpeed = outTok / (delta / 1000);
+				}
+			}
+		}
+	}
+	return samples > 0 ? { tokens, durationMs, samples, lastSpeed } : undefined;
+}
+
+function recordSpeedSample(outputTokens, durationMs) {
+	if (!speedDisplayEnabled || !(durationMs > 0) || !(outputTokens > 0)) return;
+	const currentRate = outputTokens / (durationMs / 1000);
+	speedStats.tokens += outputTokens;
+	speedStats.durationMs += durationMs;
+	speedStats.samples++;
+	speedStats.lastSpeed = currentRate;
+	renderSpeedChip(currentRate);
+}
+
+function renderSpeedChip(lastRate) {
+	if (typeof $ !== "function") return;
+	const stat = $("speedStat");
+	if (!stat) return;
+	const rateToUse = lastRate || speedStats.lastSpeed;
+	if (!speedDisplayEnabled || (speedStats.samples === 0 && !rateToUse)) {
+		stat.classList.add("hidden");
+		updateFooterSep();
+		return;
+	}
+	const formatRate = (r) => (r >= 100 ? r.toFixed(0) : r.toFixed(1));
+	const lastStr = rateToUse ? formatRate(rateToUse) : null;
+	const avgStr = speedStats.durationMs > 0 ? formatRate(speedStats.tokens / (speedStats.durationMs / 1000)) : null;
+	stat.textContent = `⚡ ${lastStr ?? avgStr} tok/s`;
+	stat.title = `Speed: latest ${lastStr ?? avgStr} tok/s · session avg: ${avgStr ?? lastStr} tok/s (${speedStats.samples} responses, ${speedStats.tokens.toLocaleString()} tokens)`;
+	stat.classList.remove("hidden");
+	updateFooterSep();
+}
+
+function updateFooterSep() {
+	if (typeof $ !== "function") return;
+	const sep = $("footerSep");
+	if (!sep) return;
+	const hasSpeed = !$("speedStat")?.classList.contains("hidden");
+	const hasCost = !$("costStat")?.classList.contains("hidden");
+	sep.classList.toggle("hidden", !(hasSpeed || hasCost));
+}
+
+function renderQuotaParkBanner(quotaPark) {
+	const banner = $("quotaParkBanner");
+	if (!banner) return;
+	clearInterval(quotaParkCountdownTimer);
+	quotaParkCountdownTimer = null;
+	if (!quotaPark || !quotaPark.isParked || !(quotaPark.resumeAtMs > Date.now())) {
+		banner.classList.add("hidden");
+		return;
+	}
+	const descEl = $("parkCountdownText");
+	const updateCountdown = () => {
+		const remainingMs = Math.max(0, quotaPark.resumeAtMs - Date.now());
+		if (remainingMs <= 0) {
+			banner.classList.add("hidden");
+			clearInterval(quotaParkCountdownTimer);
+			return;
+		}
+		const totalSec = Math.ceil(remainingMs / 1000);
+		const mins = Math.floor(totalSec / 60);
+		const secs = totalSec % 60;
+		const timeStr = new Date(quotaPark.resumeAtMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+		descEl.textContent = `Auto-resuming in ${mins > 0 ? `${mins}m ${secs}s` : `${secs}s`} (at ${timeStr}) · Park #${quotaPark.parkCount ?? 1}`;
+	};
+	updateCountdown();
+	quotaParkCountdownTimer = setInterval(updateCountdown, 1000);
+	banner.classList.remove("hidden");
+}
+
+function findSessionUsage(id) {
+	if (!id || typeof catalogSessions === "undefined" || !Array.isArray(catalogSessions)) return undefined;
+	const found = catalogSessions.find((s) => s.id === id || s.sessionId === id || s.activeSessionId === id);
+	return found?.usage;
+}
+
 function refreshHeader(state) {
 	$("title").textContent = state?.sessionName || `Session ${String(state?.sessionId ?? active?.id ?? "").slice(0, 8)}`;
 	const percent = state?.contextUsage?.percent;
 	$("ctxChip").textContent = percent == null ? "" : `ctx ${percent}%`;
 	$("ctxChip").classList.toggle("hidden", percent == null);
 
-	const costChip = $("costChip");
-	if (costChip) {
-		const usage = state?.usage;
+	const costStat = $("costStat");
+	if (costStat) {
+		const usage = state?.usage || active?.usage || findSessionUsage(active?.id || active?.sessionId || state?.sessionId);
 		if (usage && (usage.cost > 0 || usage.inputTokens > 0 || usage.outputTokens > 0)) {
 			const costStr = typeof usage.cost === "number" && usage.cost > 0
 				? `$${usage.cost < 0.01 ? usage.cost.toFixed(4) : usage.cost.toFixed(2)}`
 				: "";
 			const totalTokens = (usage.inputTokens || 0) + (usage.outputTokens || 0);
-			const tokensStr = totalTokens >= 1000 ? `${Math.round(totalTokens / 1000)}k` : String(totalTokens);
-			costChip.textContent = costStr ? `${costStr} (${tokensStr})` : `${tokensStr} tok`;
-			costChip.title = `Total session spend: ${costStr || "$0.00"} · In: ${(usage.inputTokens || 0).toLocaleString()} · Out: ${(usage.outputTokens || 0).toLocaleString()}`;
-			costChip.classList.remove("hidden");
+			const tokensStr = typeof formatTokens === "function" ? formatTokens(totalTokens) : String(totalTokens);
+			costStat.textContent = costStr ? `${costStr} (${tokensStr})` : `${tokensStr} tok`;
+			costStat.title = `Total session spend: ${costStr || "$0.00"} · In: ${(usage.inputTokens || 0).toLocaleString()} · Out: ${(usage.outputTokens || 0).toLocaleString()}`;
+			costStat.classList.remove("hidden");
 		} else {
-			costChip.classList.add("hidden");
+			costStat.classList.add("hidden");
 		}
+		if (typeof updateFooterSep === "function") updateFooterSep();
 	}
 
 	const cwd = state?.cwd || active?.cwd;
@@ -2477,6 +2927,8 @@ function refreshHeader(state) {
 	$("thinking").disabled = false;
 	enableHeaderButtons(true);
 	renderGoalBanner(state?.goal ?? null);
+	renderQuotaParkBanner(state?.quotaPark);
+	renderSpeedChip();
 }
 
 function enableHeaderButtons(enabled) {
@@ -2820,6 +3272,8 @@ async function attach(snap) {
 	active = session;
 	modelCache = [];
 	closeModelMenu();
+	const computedSpeed = typeof calculateSpeedFromMessages === "function" ? calculateSpeedFromMessages(snap.messages) : undefined;
+	if (computedSpeed) speedStats = computedSpeed;
 	if (snap.state) {
 		if (snap.state?.cwd) active.cwd = snap.state.cwd;
 		refreshHeader(snap.state);
@@ -2829,10 +3283,10 @@ async function attach(snap) {
 		refreshHeader({ sessionId: snap.activeSessionId });
 	}
 	renderMessages(snap.messages ?? []);
-	// For any still-running subagents that were not in transcript history, render them
+	// Render all subagents recorded in session snapshot (both active and completed)
 	if (Array.isArray(snap.children) && typeof renderSubagentCard === "function") {
 		for (const child of snap.children) {
-			if (child.status === "running" || child.status === "queued") {
+			if (child) {
 				renderSubagentCard(child);
 			}
 		}
@@ -2881,8 +3335,61 @@ function handleEvent(evt) {
 	}
 }
 
+
+let composerImages = [];
+
+function handleImageFiles(files) {
+	for (const file of files) {
+		if (!file || !file.type.startsWith("image/")) continue;
+		const reader = new FileReader();
+		reader.onload = () => {
+			const result = reader.result;
+			if (typeof result !== "string") return;
+			const commaIdx = result.indexOf(",");
+			const base64Data = commaIdx >= 0 ? result.slice(commaIdx + 1) : result;
+			composerImages.push({
+				data: base64Data,
+				mimeType: file.type || "image/png",
+				filename: file.name || "image.png",
+				previewUrl: result,
+			});
+			renderComposerAttachments();
+		};
+		reader.readAsDataURL(file);
+	}
+}
+
+function renderComposerAttachments() {
+	if (typeof $ !== "function") return;
+	const container = $("composerAttachments");
+	if (!container) return;
+	if (composerImages.length === 0) {
+		container.classList.add("hidden");
+		container.replaceChildren();
+		return;
+	}
+	container.replaceChildren();
+	composerImages.forEach((img, idx) => {
+		const pill = el("div", "attachment-pill");
+		const thumb = el("img");
+		thumb.src = img.previewUrl;
+		thumb.alt = img.filename;
+		const name = el("span", "", img.filename.length > 18 ? img.filename.slice(0, 15) + "…" : img.filename);
+		const removeBtn = el("span", "remove-att", "✕");
+		removeBtn.onclick = (e) => {
+			e.stopPropagation();
+			composerImages.splice(idx, 1);
+			renderComposerAttachments();
+		};
+		pill.append(thumb, name, removeBtn);
+		container.append(pill);
+	});
+	container.classList.remove("hidden");
+}
+
 function freshRun() {
 	return {
+		startedAt: Date.now(),
 		assistant: null, thinking: null,
 		assistantRaw: "", renderedAt: 0, streamingRendered: false,
 		thinkingRaw: "", thinkingRenderedAt: 0, thinkingText: null, thinkingPending: "",
@@ -2968,6 +3475,10 @@ function handleSessionEvent(event) {
 
 			flushAssistantMarkdown();
 			closeThinking();
+			if (typeof recordSpeedSample === "function" && lastAssistant?.usage?.output && run?.startedAt) {
+				const durationMs = Math.max(1, Date.now() - run.startedAt);
+				recordSpeedSample(Number(lastAssistant.usage.output), durationMs);
+			}
 			// A crash or missed event may have orphaned a streaming caret — clear it.
 			for (const bubble of transcript.querySelectorAll(".bubble.streaming")) bubble.classList.remove("streaming");
 
@@ -3002,6 +3513,12 @@ function handleSessionEvent(event) {
 
 				if (isComplete) {
 					notifyDone(finishedText);
+				} else if (lastAssistant?.errorMessage || lastAssistant?.stopReason === "error") {
+					const errObj = lastAssistant?.errorMessage || "Model request error";
+					appendNode(createErrorCard(errObj, lastAssistant?.stopReason));
+					scroll(true);
+					const { title, advice } = parseDetailedError(errObj, lastAssistant?.stopReason);
+					showToast(title, advice, "error");
 				}
 			}
 
@@ -3091,6 +3608,12 @@ function handleSessionEvent(event) {
 			if (ae.type === "thinking_end") {
 				closeThinking();
 				scroll();
+			}
+			if (ae.type === "error" || ae.error) {
+				flushAssistantMarkdown();
+				closeThinking();
+				appendNode(createErrorCard(ae.error || ae.errorMessage || "Stream error", "error"));
+				scroll(true);
 			}
 			break;
 		}
@@ -3311,6 +3834,8 @@ function applyVisibility() {
 	if (toolCallsCheck) toolCallsCheck.textContent = showToolCalls ? "✓" : "";
 	const soundCheck = $("menuSoundCheck");
 	if (soundCheck) soundCheck.textContent = soundEnabled ? "✓" : "";
+	const speedCheck = $("menuSpeedCheck");
+	if (speedCheck) speedCheck.textContent = speedDisplayEnabled ? "✓" : "";
 }
 
 function toggleThinkingPref() {
@@ -3336,6 +3861,16 @@ async function reloadConfig() {
 
 // checkable rows: biarkan dropdown tetap terbuka saat toggle
 $("menuSound").addEventListener("click", () => toggleSoundPref());
+$("menuSpeed").addEventListener("click", () => {
+	closeMoreMenu();
+	void BUILTIN_HANDLERS.speed();
+});
+const parkDismissBtn = $("parkDismissBtn");
+if (parkDismissBtn) {
+	parkDismissBtn.addEventListener("click", () => {
+		$("quotaParkBanner")?.classList.add("hidden");
+	});
+}
 $("menuTestSound").addEventListener("click", () => {
 	closeMoreMenu();
 	soundEnabled = true;
@@ -3468,7 +4003,7 @@ async function executeFork(entryId, position) {
 		showToast(
 			"Forked to new session",
 			position === "before"
-				? "Branched before prompt — prompt loaded into input for editing"
+				? "Branched before prompt: prompt loaded into input for editing"
 				: "Branched session up to this prompt",
 			"info"
 		);
@@ -3787,6 +4322,7 @@ function togglePanel(tab) {
 	if (tab === "files") void renderFiles();
 	if (tab === "git") void renderGit();
 	if (tab === "jobs") void renderJobs();
+	if (tab === "terminal") void renderTerminal();
 }
 
 function panelBody() { return $("panelBody"); }
@@ -4063,6 +4599,260 @@ function mergeBuiltins(serverCommands) {
 	return [...list, ...BUILTIN_COMMANDS.filter((builtin) => !list.some((cmd) => cmd.name === builtin.name))];
 }
 
+
+let activeTerminalSession = null;
+
+function cleanupActiveTerminal() {
+	if (activeTerminalSession) {
+		try {
+			if (activeTerminalSession.ws) activeTerminalSession.ws.close();
+			if (activeTerminalSession.resizeObserver) activeTerminalSession.resizeObserver.disconnect();
+			if (activeTerminalSession.term) activeTerminalSession.term.dispose();
+		} catch {}
+		activeTerminalSession = null;
+	}
+}
+
+async function renderTerminal() {
+	const body = panelBody();
+	body.replaceChildren();
+	if (!active) {
+		body.append(el("div", "notice", "No session open."));
+		return;
+	}
+
+	// If we already have an active live terminal for this session, reuse it
+	if (activeTerminalSession && activeTerminalSession.sessionId === active.id && activeTerminalSession.ws?.readyState === WebSocket.OPEN) {
+		body.append(activeTerminalSession.containerEl);
+		if (activeTerminalSession.fitAddon) {
+			setTimeout(() => {
+				activeTerminalSession.fitAddon.fit();
+				activeTerminalSession.term.focus();
+			}, 30);
+		}
+		return;
+	}
+
+	cleanupActiveTerminal();
+
+	const container = el("div", "terminal-container");
+
+	// Header: CWD + Status Badge + Actions
+	const header = el("div", "terminal-header");
+	const cwdLabel = el("span", "terminal-cwd", `cwd: ${formatDisplayPath(active.state?.cwd || "~")}`);
+
+	const headerRight = el("div", "");
+	headerRight.style.display = "flex";
+	headerRight.style.alignItems = "center";
+	headerRight.style.gap = "8px";
+
+	const badge = el("span", "terminal-status-badge", "Connecting...");
+
+	const ctrlCBtn = el("button", "terminal-pill sigint", "Ctrl+C");
+	ctrlCBtn.type = "button";
+	ctrlCBtn.title = "Kirim sinyal interupsi SIGINT (Ctrl+C)";
+	ctrlCBtn.onclick = () => {
+		if (activeTerminalSession?.ws && activeTerminalSession.ws.readyState === WebSocket.OPEN) {
+			activeTerminalSession.ws.send(JSON.stringify({ type: "input", data: "\x03" }));
+			activeTerminalSession.term?.focus();
+		}
+	};
+
+	const clearBtn = el("button", "terminal-pill", "Clear");
+	clearBtn.type = "button";
+
+	const restartBtn = el("button", "terminal-pill", "Restart PTY");
+	restartBtn.type = "button";
+	restartBtn.onclick = () => {
+		cleanupActiveTerminal();
+		void renderTerminal();
+	};
+
+	headerRight.append(badge, ctrlCBtn, clearBtn, restartBtn);
+	header.append(cwdLabel, headerRight);
+
+	const sendPtyInput = (data) => {
+		if (activeTerminalSession?.ws && activeTerminalSession.ws.readyState === WebSocket.OPEN) {
+			activeTerminalSession.ws.send(JSON.stringify({ type: "input", data }));
+			activeTerminalSession.term?.focus();
+		}
+	};
+
+	// Virtual Navigation Keys Toolbar
+	const keysRow = el("div", "terminal-keys-row");
+
+	const tabBtn = el("button", "terminal-key-btn", "⇥ Tab");
+	tabBtn.type = "button";
+	tabBtn.title = "Kirim tombol Tab (Auto-complete)";
+	tabBtn.onclick = () => sendPtyInput("\t");
+
+	const upBtn = el("button", "terminal-key-btn arrow", "↑");
+	upBtn.type = "button";
+	upBtn.title = "Panah Atas (Riwayat Perintah)";
+	upBtn.onclick = () => sendPtyInput("\x1b[A");
+
+	const downBtn = el("button", "terminal-key-btn arrow", "↓");
+	downBtn.type = "button";
+	downBtn.title = "Panah Bawah (Riwayat Perintah)";
+	downBtn.onclick = () => sendPtyInput("\x1b[B");
+
+	const leftBtn = el("button", "terminal-key-btn arrow", "←");
+	leftBtn.type = "button";
+	leftBtn.title = "Panah Kiri";
+	leftBtn.onclick = () => sendPtyInput("\x1b[D");
+
+	const rightBtn = el("button", "terminal-key-btn arrow", "→");
+	rightBtn.type = "button";
+	rightBtn.title = "Panah Kanan";
+	rightBtn.onclick = () => sendPtyInput("\x1b[C");
+
+	const escBtn = el("button", "terminal-key-btn", "Esc");
+	escBtn.type = "button";
+	escBtn.title = "Escape Key";
+	escBtn.onclick = () => sendPtyInput("\x1b");
+
+	keysRow.append(tabBtn, upBtn, downBtn, leftBtn, rightBtn, escBtn);
+
+	// Quick Command Pills
+	const pills = el("div", "terminal-pills");
+	const quickCommands = ["git status", "git diff", "pwd", "ls -la", "node -v", "npm test", "htop"];
+	for (const cmd of quickCommands) {
+		const pill = el("button", "terminal-pill", cmd);
+		pill.type = "button";
+		pill.onclick = () => sendPtyInput(cmd + "\r");
+		pills.append(pill);
+	}
+
+	// Terminal Host Container for xterm.js
+	const terminalHost = el("div", "xterm-host");
+	container.append(header, keysRow, pills, terminalHost);
+	body.append(container);
+
+	// Fallback if xterm is not loaded yet
+	if (typeof Terminal === "undefined") {
+		terminalHost.append(el("div", "notice", "Loading xterm.js terminal engine..."));
+		return;
+	}
+
+	const term = new Terminal({
+		cursorBlink: true,
+		fontSize: 12.5,
+		lineHeight: 1.25,
+		fontFamily: "JetBrains Mono, Menlo, Monaco, Consolas, monospace",
+		theme: {
+			background: "#090d13",
+			foreground: "#e6edf3",
+			cursor: "#58a6ff",
+			cursorAccent: "#090d13",
+			selectionBackground: "rgba(56, 139, 253, 0.35)",
+			black: "#0d1117",
+			red: "#ff7b72",
+			green: "#3fb950",
+			yellow: "#d29922",
+			blue: "#58a6ff",
+			magenta: "#bc8cff",
+			cyan: "#39c5cf",
+			white: "#d0d7de",
+			brightBlack: "#484f58",
+			brightRed: "#ffa198",
+			brightGreen: "#56d364",
+			brightYellow: "#e3b341",
+			brightBlue: "#79c0ff",
+			brightMagenta: "#d2a8ff",
+			brightCyan: "#56d4dd",
+			brightWhite: "#ffffff",
+		},
+	});
+
+	let fitAddon = null;
+	if (typeof FitAddon !== "undefined" && FitAddon.FitAddon) {
+		fitAddon = new FitAddon.FitAddon();
+		term.loadAddon(fitAddon);
+	}
+
+	term.open(terminalHost);
+
+	clearBtn.onclick = () => {
+		term.clear();
+		term.focus();
+	};
+
+	// Open WebSocket connection to PTY backend
+	const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+	const sessionCwd = active.state?.cwd || active.cwd || "";
+	const wsUrl = `${protocol}//${location.host}/api/terminal/ws?sessionId=${encodeURIComponent(active.id)}&cwd=${encodeURIComponent(sessionCwd)}&token=${encodeURIComponent(token)}`;
+	const ws = new WebSocket(wsUrl);
+
+	term.onData((data) => {
+		if (ws.readyState === WebSocket.OPEN) {
+			ws.send(JSON.stringify({ type: "input", data }));
+		}
+	});
+
+	ws.onopen = () => {
+		badge.textContent = "Live PTY";
+		badge.className = "terminal-status-badge online";
+		if (fitAddon) {
+			fitAddon.fit();
+			ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+		}
+		term.focus();
+	};
+
+	ws.onmessage = (event) => {
+		try {
+			const msg = JSON.parse(event.data);
+			if (msg.type === "output" && typeof msg.data === "string") {
+				term.write(msg.data);
+			} else if (msg.type === "exit") {
+				badge.textContent = `Exited (${msg.code})`;
+				badge.className = "terminal-status-badge offline";
+				term.writeln(`\r\n\x1b[33m[Process exited with code ${msg.code}]\x1b[0m`);
+			}
+		} catch {
+			term.write(event.data);
+		}
+	};
+
+	ws.onclose = () => {
+		badge.textContent = "Disconnected";
+		badge.className = "terminal-status-badge offline";
+	};
+
+	ws.onerror = (err) => {
+		badge.textContent = "Connection Error";
+		badge.className = "terminal-status-badge offline";
+	};
+
+	// Handle resize dynamically
+	let resizeObserver = null;
+	if (typeof ResizeObserver !== "undefined" && fitAddon) {
+		resizeObserver = new ResizeObserver(() => {
+			if (fitAddon && terminalHost.clientWidth > 0 && terminalHost.clientHeight > 0) {
+				fitAddon.fit();
+				if (ws.readyState === WebSocket.OPEN) {
+					ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+				}
+			}
+		});
+		resizeObserver.observe(terminalHost);
+	}
+
+	activeTerminalSession = {
+		sessionId: active.id,
+		containerEl: container,
+		term,
+		fitAddon,
+		ws,
+		resizeObserver,
+	};
+
+	setTimeout(() => {
+		if (fitAddon) fitAddon.fit();
+		term.focus();
+	}, 50);
+}
+
 async function loadCommands(sessionId) {
 	if (cmdLoading) return cmdCache.get(sessionId) ?? [];
 	cmdLoading = true;
@@ -4074,7 +4864,7 @@ async function loadCommands(sessionId) {
 	} catch (error) {
 		if (/No route/i.test(error.message) && !cmdNoticeShown) {
 			cmdNoticeShown = true;
-			appendNode(el("div", "notice", "Gateway out of date — restart the web gateway to enable slash commands and reload."));
+			appendNode(el("div", "notice", "Gateway out of date: restart the web gateway to enable slash commands and reload."));
 			scroll();
 		}
 		console.warn("command list failed", error);
@@ -4465,6 +5255,14 @@ document.addEventListener("visibilitychange", () => {
 
 async function openSessionById(id, sessionFile, live) {
 	const sequence = ++sessionOpenSequence;
+	// 1. Instant mobile feedback: close drawer immediately so user sees the transition
+	closeSidebar();
+	if (id) highlightSession(id);
+	if (!active || active.id !== id) {
+		setWelcome(false);
+		showTyping("Opening session…");
+	}
+
 	const isLive = Boolean(live && live !== "0");
 	const body = {
 		...(id ? { activeSessionId: id } : {}),
@@ -4483,18 +5281,16 @@ async function openSessionById(id, sessionFile, live) {
 				});
 				if (sequence !== sessionOpenSequence) return;
 				await attach(snap);
-				closeSidebar();
 				void refreshSessions().catch(() => undefined);
 				return;
 			} catch (resumeErr) {
 				console.warn("Fallback resume failed:", resumeErr);
 			}
 		}
-		closeSidebar();
+		hideTyping();
 		void refreshSessions().catch(() => undefined);
 		throw error;
 	}
-	closeSidebar();
 	void refreshSessions().catch(() => undefined);
 }
 
@@ -4572,6 +5368,22 @@ $("welcomeNew").addEventListener("submit", async (event) => {
 });
 
 const BUILTIN_HANDLERS = {
+	async speed(args) {
+		const arg = (args || "").trim().toLowerCase();
+		if (arg && arg !== "on" && arg !== "off") {
+			appendNode(el("div", "card", "Usage: /speed [on|off]"));
+			return;
+		}
+		const enabled = arg === "on" ? true : arg === "off" ? false : !speedDisplayEnabled;
+		speedDisplayEnabled = enabled;
+		localStorage.setItem("prime_speed_display", enabled ? "1" : "0");
+		if (!enabled) {
+			speedStats = { tokens: 0, durationMs: 0, samples: 0 };
+		}
+		renderSpeedChip();
+		applyVisibility();
+		showToast("Speed display", enabled ? "Speed readout enabled (⚡ tok/s)" : "Speed readout disabled");
+	},
 	async refine(args) {
 		let rest = (args || "").trim();
 		let global = false;
@@ -4661,7 +5473,7 @@ const BUILTIN_HANDLERS = {
 	async reload() {
 		await api("/api/reload", { method: "POST", body: JSON.stringify({ sessionId: active.id }) });
 		cmdCache.set(active.id, mergeBuiltins(await loadCommands(active.id)));
-		appendNode(el("div", "notice", "Config reloaded — extensions, skills, prompts, and themes refreshed."));
+		appendNode(el("div", "notice", "Config reloaded: extensions, skills, prompts, and themes refreshed."));
 	},
 	async export(args) {
 		const result = await api("/api/export", {
@@ -4680,6 +5492,34 @@ const BUILTIN_HANDLERS = {
 		await resync();
 	},
 };
+
+// Clipboard image pasting support for composer
+window.addEventListener("paste", (event) => {
+	const items = event.clipboardData?.items;
+	if (!items) return;
+	const imageFiles = [];
+	for (const item of items) {
+		if (item.type && item.type.startsWith("image/")) {
+			const file = item.getAsFile();
+			if (file) imageFiles.push(file);
+		}
+	}
+	if (imageFiles.length > 0) {
+		handleImageFiles(imageFiles);
+	}
+});
+
+const attachImageBtn = $("attachImageBtn");
+const imageInput = $("imageInput");
+if (attachImageBtn && imageInput) {
+	attachImageBtn.addEventListener("click", () => imageInput.click());
+	imageInput.addEventListener("change", (e) => {
+		if (e.target.files && e.target.files.length > 0) {
+			handleImageFiles(e.target.files);
+			imageInput.value = "";
+		}
+	});
+}
 
 $("composer").addEventListener("submit", async (event) => {
 	event.preventDefault();
@@ -4705,8 +5545,10 @@ $("composer").addEventListener("submit", async (event) => {
 		}
 		return;
 	}
-	const userBubble = el("div", "bubble user", message);
-	addTimestamp(userBubble);
+	const userBubble = el("div", "bubble user");
+	const userMsgText = el("div", "user-msg-text", message);
+	userBubble.append(userMsgText);
+	attachMessageFooter(userBubble, () => message, Date.now());
 	appendNode(userBubble);
 	scroll(true);
 	try {
@@ -4714,14 +5556,24 @@ $("composer").addEventListener("submit", async (event) => {
 			openSessionEventStream(active);
 		}
 		const wasBusy = busy;
+		const promptPayload = {
+			sessionId: active.id,
+			message,
+			streamingBehavior: busy ? "steer" : undefined,
+			...(composerImages.length > 0 ? { images: composerImages.map((i) => ({ type: "image", data: i.data, mimeType: i.mimeType })) } : {}),
+		};
+		composerImages = [];
+		renderComposerAttachments();
 		await api("/api/prompt", {
 			method: "POST",
-			body: JSON.stringify({ sessionId: active.id, message, streamingBehavior: busy ? "steer" : undefined }),
+			body: JSON.stringify(promptPayload),
 		});
 		if (!wasBusy) showTyping();
 	} catch (error) {
-		appendNode(el("div", "card", error.message));
-		scroll();
+		appendNode(createErrorCard(error.message));
+		scroll(true);
+		const { title, advice } = parseDetailedError(error.message);
+		showToast(title, advice, "error");
 	}
 });
 
@@ -4757,7 +5609,7 @@ input.addEventListener("keydown", (event) => {
 for (const id of ["stopBtn"]) {
 	const btn = document.getElementById(id);
 	if (!btn) {
-		console.warn(`Prime Agent web: #` + id + ` missing — stale HTML? hard reload`);
+		console.warn(`Prime Agent web: #` + id + ` missing (stale HTML? hard reload)`);
 		continue;
 	}
 	btn.addEventListener("click", () => {
@@ -4814,8 +5666,10 @@ async function chooseModel(model) {
 			refreshHeader(result.state);
 		}
 	} catch (error) {
-		appendNode(el("div", "card", error.message));
-		scroll();
+		appendNode(createErrorCard(error.message));
+		scroll(true);
+		const { title, advice } = parseDetailedError(error.message);
+		showToast(title, advice, "error");
 	}
 }
 
@@ -4926,8 +5780,8 @@ $("thinking").addEventListener("change", async (event) => {
 // Startup self-audit: if the served HTML is older/newer than this script, wired
 // controls go missing and listeners would throw mid-file, killing everything after.
 // Fail loudly and name the missing elements instead.
-const WIRED_IDS = ["brandHome", "brandMini", "browseBtn", "chatCol", "composer", "costChip", "cwdChip", "subagentChip", "goalBanner", "goalChip", "goalClearBtn", "goalEditBtn", "goalPauseBtn", "goalToggleBtn", "jumpBtn", "loginForm", "logoutBtn", "menuAsk", "menuChangePassword", "menuClone", "menuCompact", "menuFork", "menuGoal", "menuPanel", "menuRefine", "menuReload", "menuThinking", "menuToolCalls", "modelBtn", "modelSearch", "moreBtn", "navBtn", "panelClose", "scrim", "stopBtn", "thinking", "welcomeNew"];
+const WIRED_IDS = ["brandHome", "brandMini", "browseBtn", "chatCol", "composer", "costStat", "quotaParkBanner", "speedStat", "cwdChip", "subagentChip", "goalBanner", "goalChip", "goalClearBtn", "goalEditBtn", "goalPauseBtn", "goalToggleBtn", "jumpBtn", "loginForm", "logoutBtn", "menuAsk", "menuChangePassword", "menuClone", "menuCompact", "menuFork", "menuGoal", "menuPanel", "menuRefine", "menuReload", "menuSpeed", "menuThinking", "menuToolCalls", "modelBtn", "modelSearch", "moreBtn", "navBtn", "panelClose", "scrim", "stopBtn", "thinking", "welcomeNew"];
 const missingWired = WIRED_IDS.filter((id) => !document.getElementById(id));
 if (missingWired.length) {
-	console.error("Prime Agent web: HTML/JS version mismatch — missing #" + missingWired.join(", #") + ". Hard reload the page.");
+	console.error("Prime Agent web: HTML/JS version mismatch: missing #" + missingWired.join(", #") + ". Hard reload the page.");
 }

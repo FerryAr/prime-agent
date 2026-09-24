@@ -11,7 +11,9 @@
 	<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>Prime Agent Web</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%237ee2b8'/%3E%3Cstop offset='1' stop-color='%232f81f7'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath fill='url(%23g)' d='M16 2l12 7v14l-12 7L4 23V9z'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="/app.css?v=68">
+<link rel="stylesheet" href="/vendor/katex.min.css">
+<link rel="stylesheet" href="/vendor/xterm.css">
+<link rel="stylesheet" href="/app.css?v=76">
 </head>
 <body>
 <div id="app">
@@ -40,7 +42,6 @@
 				<span id="subagentChip" class="chip subagent hidden" title="Running subagent"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg> <span id="subagentChipText">Subagent</span></span>
 				<span id="busy" class="hidden" title="Agent is working"></span>
 				<span id="connChip" class="chip conn hidden">Reconnecting…</span>
-				<span id="costChip" class="chip cost hidden" title="Total session spend & tokens"></span>
 				<span id="ctxChip" class="chip hidden"></span>
 				<span id="goalChip" class="chip goal hidden" title="Active thread goal"><span class="goal-chip-dot"></span><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg> <span>Goal</span></span>
 			</div>
@@ -69,8 +70,9 @@
 						<button class="menurow" id="menuThinking" type="button"><span class="menuslot" id="menuThinkingCheck"></span><span class="menulabel">Thinking</span></button>
 						<button class="menurow" id="menuToolCalls" type="button"><span class="menuslot" id="menuToolCallsCheck"></span><span class="menulabel">Tool calls</span></button>
 						<button class="menurow" id="menuSound" type="button"><span class="menuslot" id="menuSoundCheck"></span><span class="menulabel">Finish sound</span></button>
+						<button class="menurow" id="menuSpeed" type="button"><span class="menuslot" id="menuSpeedCheck"></span><span class="menulabel">Speed readout</span><span class="menukey">/speed</span></button>
 						<button class="menurow" id="menuTestSound" type="button"><span class="menuslot"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg></span><span class="menulabel">Test sound</span></button>
-						<button class="menurow" id="menuPanel" type="button"><span class="menuslot"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/></svg></span><span class="menulabel">Files, Git &amp; Jobs</span></button>
+						<button class="menurow" id="menuPanel" type="button"><span class="menuslot"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/></svg></span><span class="menulabel">Files, Git, Jobs &amp; Terminal</span></button>
 						<button class="menurow" id="menuAsk" type="button"><span class="menuslot"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></svg></span><span class="menulabel">Side question</span></button>
 						<div class="mendiv"></div>
 						<div class="menusec">Session</div>
@@ -90,20 +92,32 @@
 				<div class="welcome-card">
 					<div class="brand-mark big">◆</div>
 					<h1>Prime Agent</h1>
-					<p>Your coding agent, in the browser — chat, files, git, and schedules.</p>
+					<p>Your coding agent in the browser: chat, terminal, files, git, and schedules.</p>
 					<form id="welcomeNew" class="welcome-form">
 						<input id="welcomeCwd" placeholder="/path/to/project" required>
 						<button type="button" id="browseBtn" title="Browse folders on this machine">Browse</button>
 						<button type="submit">Start session</button>
 					</form>
 					<div class="hints">
-						<div class="hint"><span class="key">/</span><span>slash commands — skills, templates, tools</span></div>
+						<div class="hint"><span class="key">/</span><span>slash commands: skills, templates, tools</span></div>
 						<div class="hint"><span class="key">Tools</span><span>hide or show tool call cards</span></div>
 						<div class="hint"><span class="key">↻</span><span>reload config after changing extensions</span></div>
 					</div>
 				</div>
 			</div>
 			<div id="chatCol" class="hidden">
+				<div id="quotaParkBanner" class="quota-park-banner hidden">
+					<div class="park-icon">
+						<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+							<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+						</svg>
+					</div>
+					<div class="park-text">
+						<span class="park-title">Quota Parked: Provider limit reached</span>
+						<span id="parkCountdownText" class="park-desc">Waiting for rate limit reset…</span>
+					</div>
+					<button id="parkDismissBtn" class="park-dismiss" type="button" title="Dismiss notice">✕</button>
+				</div>
 				<div id="goalBanner" class="goal-banner hidden">
 					<div class="goal-header">
 						<div class="goal-badge-wrap">
@@ -194,6 +208,7 @@
 					<button data-tab="files" type="button">Files</button>
 					<button data-tab="git" type="button">Git</button>
 					<button data-tab="jobs" type="button">Jobs</button>
+			<button data-tab="terminal" type="button">Terminal</button>
 					<button id="panelClose" type="button">✕</button>
 				</nav>
 				<div id="panelBody"></div>
@@ -205,10 +220,20 @@
 		<form id="composer">
 			<div id="composerBox">
 				<div id="cmdMenu" class="hidden"></div>
+				<div id="composerAttachments" class="composer-attachments hidden"></div>
 				<textarea id="input" rows="1" placeholder="Message Prime Agent…"></textarea>
 				<div id="composerFooter">
-					<span id="composerHint">Enter to send · Shift+Enter for newline · <b>/</b> commands</span>
+					<div id="composerLeft">
+						<span id="composerHint">Enter to send · Shift+Enter for newline · <b>/</b> commands</span>
+						<span id="footerSep" class="footer-sep hidden">·</span>
+						<span id="speedStat" class="footer-stat speed hidden" title="Output generation speed"></span>
+						<span id="costStat" class="footer-stat cost hidden" title="Total session spend & tokens"></span>
+					</div>
 					<div id="composerActions">
+						<input type="file" id="imageInput" accept="image/*" multiple class="hidden">
+						<button type="button" id="attachImageBtn" class="iconbtn" title="Attach image (or paste image from clipboard)">
+							<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>
+						</button>
 						<button type="button" id="stopBtn" class="dangerbtn" disabled title="Stop the agent">
 							<svg viewBox="0 0 24 24" width="15" height="15"><rect x="5" y="5" width="14" height="14" rx="2" fill="currentColor" stroke="none"/></svg>
 						</button>
@@ -239,6 +264,11 @@
 		<p id="loginError" class="error"></p>
 	</div>
 </div>
-<script src="/app.js?v=68"></script>
+<script src="/vendor/katex.min.js"></script>
+<script src="/vendor/marked.min.js"></script>
+<script src="/vendor/marked-katex-extension.min.js"></script>
+<script src="/vendor/xterm.js"></script>
+<script src="/vendor/addon-fit.js"></script>
+<script src="/app.js?v=76"></script>
 </body>
 </html>
