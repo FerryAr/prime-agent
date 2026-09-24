@@ -1,6 +1,6 @@
 
 import { join } from "node:path";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 
@@ -79,7 +79,6 @@ import { Bot, InlineKeyboard, InputFile, Keyboard } from "grammy";
 import { PrimeApiClient, type SessionSnapshot } from "./api-client.js";
 import type { BotConfig } from "./config.js";
 import { escapeHtml, formatSessionSummary, splitMessage, formatSessionItemLabel, formatMessageForChat, markdownToTelegramHtml, formatModelIdentifier, formatDetailedError } from "./formatters.js";
-import { ProgressiveThrottle } from "./stream-throttle.js";
 
 interface PinnedStatusInfo {
 	chatId: number;
