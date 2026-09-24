@@ -149,6 +149,30 @@ export function createTelegramBot(config: BotConfig, apiClient: PrimeApiClient):
 	bot.catch((err) => {
 		console.error("[GRAMMY ERROR in bot update]", err);
 	});
+
+	// Universal API Resilience Transformer:
+	// Automatically retries ALL Telegram API calls (sendMessage, editMessage, getUpdates, etc.)
+	// upon network timeouts, socket disconnects, or Telegram 429 FloodWait rate limits.
+	bot.api.config.use(async (prev, method, payload, signal) => {
+		const maxRetries = 3;
+		for (let attempt = 1; attempt <= maxRetries; attempt++) {
+			try {
+				return await prev(method, payload, signal);
+			} catch (err: any) {
+				const is429 = err.error_code === 429 || err.message?.includes("429") || err.description?.includes("Too Many Requests");
+				const isNet = err.message?.includes("Network request") || err.message?.includes("fetch failed") || err.message?.includes("ETIMEDOUT") || err.message?.includes("ECONNRESET");
+				if ((is429 || isNet) && attempt < maxRetries) {
+					const retrySec = is429 ? ((err.parameters?.retry_after || 5) + 1) : 1;
+					console.log(`[TELEGRAM RETRY] ${method} failed (${is429 ? '429 RateLimit' : 'Network'}), retrying in ${retrySec}s (attempt ${attempt}/${maxRetries})...`);
+					await new Promise((r) => setTimeout(r, retrySec * 1000));
+					continue;
+				}
+				throw err;
+			}
+		}
+	});
+
+
 	// Slash commands registered once
 
 	const userActiveSessions = loadSavedUserSessions();
