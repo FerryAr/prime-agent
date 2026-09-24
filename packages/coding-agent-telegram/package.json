@@ -1,0 +1,26 @@
+{
+  "name": "@earendil-works/prime-agent-telegram",
+  "version": "0.9.5",
+  "description": "Telegram bot interface for Prime Agent over the headless API gateway",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "private": true,
+  "engines": {
+    "node": ">=22.8.0"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "tsx src/main.ts",
+    "start": "node dist/main.js",
+    "test": "vitest run test/"
+  },
+  "dependencies": {
+    "@earendil-works/prime-agent-api": "^0.9.5",
+    "@earendil-works/pi-coding-agent": "^0.9.5",
+    "grammy": "^1.35.0"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.11"
+  }
+}
