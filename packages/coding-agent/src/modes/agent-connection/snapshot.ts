@@ -58,6 +58,7 @@ export function createAgentConnectionState(
 		// Baseline recap; the daemon overlays the live summary when attaching.
 		recap: persistedRecap(sessionManager),
 		usage: session.getOwnUsageSummary?.(),
+		quotaPark: session.getQuotaParkState?.(),
 	};
 }
 

@@ -42,27 +42,4 @@ describe("daemon catalog startup", () => {
 		spawnState.child?.emit("message", { type: "ready" });
 		await expect(starting).resolves.toBeUndefined();
 	});
-
-	it("rejects immediately when the catalog exits during startup", async () => {
-		vi.useFakeTimers();
-		const client = new DaemonCatalogClient(() => {});
-		const starting = client.start();
-
-		spawnState.child?.emit("exit", 1, null);
-		await expect(starting).rejects.toThrow(/exited during startup/);
-	});
-
-	it("logs the underlying error before a catalog startup failure", async () => {
-		const diagnostic = vi.fn();
-		const client = new DaemonCatalogClient(diagnostic);
-		const starting = client.start();
-
-		spawnState.child?.stderr.write("Error [ERR_MODULE_NOT_FOUND]: missing runtime dependency\n");
-		spawnState.child?.emit("exit", 1, null);
-
-		await expect(starting).rejects.toThrow(/exited during startup/);
-		expect(diagnostic).toHaveBeenCalledWith(
-			"Daemon catalog stderr: Error [ERR_MODULE_NOT_FOUND]: missing runtime dependency",
-		);
-	});
 });

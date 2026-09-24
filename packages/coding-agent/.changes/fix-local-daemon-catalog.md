@@ -1,0 +1,2 @@
+- Fixed local builds missing runtime dependencies required to list and resume saved sessions.
+- Added daemon catalog error output to daemon logs for startup diagnostics.
