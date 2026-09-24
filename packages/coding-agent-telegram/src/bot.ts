@@ -1704,8 +1704,7 @@ if (data.startsWith("switch:")) {
 
 		const sessions = await apiClient.getSessions().catch(() => []);
 		const sess = sessions.find((s) => s.id === sessionId || s.activeSessionId === sessionId);
-		// Hanya anggap working jika benar-benar sedang streaming output teks, menjalankan tools, atau bash
-		const isWorking = Boolean(sess && (sess.isStreaming || sess.isRunningTools || sess.isBashRunning));
+		const isWorking = Boolean(sess && (sess.isStreaming || sess.isRunningTools || sess.isBashRunning || sess.activity === "working"));
 		if (!isWorking) return false;
 
 		const sendTyping = () => {
@@ -1714,31 +1713,58 @@ if (data.startsWith("switch:")) {
 		sendTyping();
 		const typingTimer = setInterval(sendTyping, 4000);
 
+		let currentOutputText = "";
+
 		const { unsubscribe } = apiClient.subscribeEvents(sessionId, async (event) => {
 			const raw = event.type === "session_event" ? event.event : event;
+			if (raw.type === "message_update") {
+				const ae = raw.assistantMessageEvent ?? raw;
+				if (ae.type === "text_delta" || ae.type === "text_start") {
+					currentOutputText += ae.delta ?? "";
+				}
+			}
+
 			if (raw.type === "agent_end") {
 				stopTrackingSession(chatId);
-				const messages = Array.isArray(raw.messages) ? raw.messages : [];
-				let assistantText = "";
-				for (let i = messages.length - 1; i >= 0; i--) {
-					const m = messages[i];
-					if (!m || (m.role !== "assistant" && m.message?.role !== "assistant")) continue;
-					const c = m.content ?? m.message?.content;
-					if (typeof c === "string" && c.trim().length > 0) {
-						assistantText = c;
-						break;
-					} else if (Array.isArray(c)) {
-						const textParts = c.filter((p: any) => p && p.type === "text").map((p: any) => p.text ?? "");
-						if (textParts.length > 0 && textParts.join("").trim().length > 0) {
-							assistantText = textParts.join("\n");
+				let deliverText = currentOutputText.trim();
+
+				if (!deliverText) {
+					const messages = Array.isArray(raw.messages) ? raw.messages : [];
+					for (let i = messages.length - 1; i >= 0; i--) {
+						const m = messages[i];
+						if (!m || (m.role !== "assistant" && m.message?.role !== "assistant")) continue;
+						const c = m.content ?? m.message?.content;
+						if (typeof c === "string" && c.trim().length > 0) {
+							deliverText = c;
 							break;
+						} else if (Array.isArray(c)) {
+							const textParts = c.filter((p: any) => p && p.type === "text").map((p: any) => p.text ?? "");
+							if (textParts.length > 0 && textParts.join("").trim().length > 0) {
+								deliverText = textParts.join("\n");
+								break;
+							}
 						}
 					}
 				}
 
-				let deliverText = assistantText.trim();
+				// Fallback: fetch state if stream didn't capture the final text
 				if (!deliverText) {
-					const tools = messages.flatMap((m: any) => Array.isArray(m?.content) ? m.content.filter((b: any) => b.type === "toolCall") : []);
+					const state = await apiClient.getState(sessionId).catch(() => null);
+					for (const m of (state?.messages || []).slice().reverse()) {
+						if (m.role === "assistant" || m.message?.role === "assistant") {
+							const c = m.content ?? m.message?.content;
+							if (typeof c === "string" && c.trim()) { deliverText = c; break; }
+							if (Array.isArray(c)) {
+								const t = c.filter((p: any) => p?.type === "text").map((p: any) => p.text ?? "").join("\n");
+								if (t.trim()) { deliverText = t; break; }
+							}
+						}
+					}
+				}
+
+				if (!deliverText) {
+					const state = await apiClient.getState(sessionId).catch(() => null);
+					const tools = (state?.messages || []).flatMap((m: any) => Array.isArray(m?.content) ? m.content.filter((b: any) => b.type === "toolCall") : []);
 					if (tools.length > 0) {
 						const lastT = tools[tools.length - 1];
 						deliverText = `⚙️ <i>Aksi tool <code>${escapeHtml(lastT.name || "tool")}</code> selesai diproses.</i>`;
