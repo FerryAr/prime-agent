@@ -24,7 +24,7 @@ await build({
 	platform: "node",
 	format: "esm",
 	banner: {
-		js: "import { createRequire as __piBundleCreateRequire } from 'node:module'; const require = __piBundleCreateRequire(import.meta.url);",
+		js: "import { createRequire as __piBundleCreateRequire } from 'node:module'; const require = __piBundleCreateRequire(import.meta.url); import dns from 'node:dns'; try { dns.setDefaultResultOrder('ipv4first'); } catch {}",
 	},
 	tsconfig: join(pkgDir, "tsconfig.json"),
 	external: [

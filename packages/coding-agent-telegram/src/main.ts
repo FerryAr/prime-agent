@@ -1,6 +1,3 @@
-import dns from "node:dns";
-dns.setDefaultResultOrder("ipv4first");
-
 process.on("unhandledRejection", (reason) => {
 	console.error("[TELEGRAM UNHANDLED REJECTION]", reason);
 });

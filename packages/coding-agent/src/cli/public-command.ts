@@ -344,7 +344,7 @@ function findTelegramLaunchSpec(): { command: string; args: string[]; cwd: strin
 
 	const distMain = join(tgPkgDir, "dist", "main.js");
 	if (existsSync(distMain)) {
-		return { command: process.execPath, args: [distMain], cwd: tgPkgDir };
+		return { command: process.execPath, args: ["--dns-result-order=ipv4first", distMain], cwd: tgPkgDir };
 	}
 	const srcMain = join(tgPkgDir, "src", "main.ts");
 	const tsxCli = join(dirname(tgPkgDir), "..", "node_modules", "tsx", "dist", "cli.mjs");
