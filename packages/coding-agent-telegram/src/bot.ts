@@ -742,7 +742,6 @@ export function createTelegramBot(config: BotConfig, apiClient: PrimeApiClient):
 			const state = await apiClient.getState(sessionId);
 			const allMessages = state.messages || [];
 
-			// Filter only user & assistant messages
 			const chatMessages: string[] = [];
 			for (const m of allMessages) {
 				const formatted = formatMessageForChat(m);
@@ -750,24 +749,54 @@ export function createTelegramBot(config: BotConfig, apiClient: PrimeApiClient):
 			}
 
 			if (chatMessages.length === 0) {
-				await ctx.reply("📭 Belum ada riwayat percakapan di sesi ini.");
+				await sendTelegramMessageSafe(async () => {
+					return await ctx.reply("📭 <i>Belum ada riwayat percakapan di sesi ini.</i>", { parse_mode: "HTML" });
+				});
 				return;
 			}
 
-			// Batasi 5 giliran (turns) terakhir
 			const recent = chatMessages.slice(-5);
-			await ctx.reply(`📜 <b>Riwayat Sesi (${sessionId.slice(0, 8)}):</b>\nMenampilkan ${recent.length} pesan terakhir:`, {
-				parse_mode: "HTML",
-			});
+			const header = `📜 <b>5 Percakapan Terakhir (Sesi <code>${sessionId.slice(0, 8)}</code>):</b>`;
+			
+			// Pack messages into compact bubbles to avoid spamming multiple network requests
+			const bubbles: string[] = [];
+			let currentBubble = header;
 
 			for (const msg of recent) {
-				const chunks = splitMessage(msg, 3800);
+				const candidate = `${currentBubble}\n\n───────────────\n\n${msg}`;
+				if (candidate.length <= 3600) {
+					currentBubble = candidate;
+				} else {
+					bubbles.push(currentBubble);
+					currentBubble = msg;
+				}
+			}
+			if (currentBubble) {
+				bubbles.push(currentBubble);
+			}
+
+			for (const bubble of bubbles) {
+				const chunks = splitMessage(bubble, 3800);
 				for (const chunk of chunks) {
-					await ctx.reply(chunk, { parse_mode: "HTML" });
+					await sendTelegramMessageSafe(async () => {
+						try {
+							return await ctx.reply(chunk, {
+								parse_mode: "HTML",
+								reply_markup: getMainReplyKeyboard(),
+							});
+						} catch {
+							return await ctx.reply(chunk.replace(/<[^>]*>/g, ""), {
+								reply_markup: getMainReplyKeyboard(),
+							});
+						}
+					});
+					await new Promise((r) => setTimeout(r, 250));
 				}
 			}
 		} catch (err: any) {
-			await ctx.reply(`❌ Failed to fetch history: ${err.message}`);
+			await sendTelegramMessageSafe(async () => {
+				return await ctx.reply(`❌ Failed to fetch history: ${err.message}`);
+			});
 		}
 	});
 
@@ -1385,15 +1414,21 @@ if (data.startsWith("switch:")) {
 				}
 				if (chatMessages.length > 0) {
 					const recent = chatMessages.slice(-2);
-					await ctx.reply(`📜 <b>Riwayat Terakhir Sesi (${targetId.slice(0, 8)}):</b>`, { parse_mode: "HTML" });
-					for (const msg of recent) {
-						const chunks = splitMessage(msg, 3800);
-						for (const chunk of chunks) {
-							await ctx.reply(chunk, { parse_mode: "HTML" });
-						}
+					const previewText = `📜 <b>Riwayat Terakhir Sesi (<code>${targetId.slice(0, 8)}</code>):</b>\n\n` + recent.join("\n\n───────────────\n\n");
+					const chunks = splitMessage(previewText, 3800);
+					for (const chunk of chunks) {
+						await sendTelegramMessageSafe(async () => {
+							try {
+								return await ctx.reply(chunk, { parse_mode: "HTML" });
+							} catch {
+								return await ctx.reply(chunk.replace(/<[^>]*>/g, ""));
+							}
+						});
 					}
 				} else {
-					await ctx.reply("ℹ️ <i>Sesi ini belum memiliki percakapan.</i>", { parse_mode: "HTML" });
+					await sendTelegramMessageSafe(async () => {
+						return await ctx.reply("ℹ️ <i>Sesi ini belum memiliki percakapan.</i>", { parse_mode: "HTML" });
+					});
 				}
 
 
