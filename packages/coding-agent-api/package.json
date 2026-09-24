@@ -1,0 +1,36 @@
+{
+  "name": "@earendil-works/prime-agent-api",
+  "version": "0.9.5",
+  "description": "Headless HTTP and SSE API gateway for Prime Agent sessions",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./server": {
+      "import": "./dist/server.js",
+      "types": "./dist/server.d.ts"
+    }
+  },
+  "private": true,
+  "engines": {
+    "node": ">=22.8.0"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "tsx src/main.ts",
+    "start": "node dist/main.js",
+    "test": "vitest run test/"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "^0.9.5",
+    "node-pty": "^1.0.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.11"
+  }
+}
