@@ -1,3 +1,6 @@
+import dns from "node:dns";
+dns.setDefaultResultOrder("ipv4first");
+
 process.on("unhandledRejection", (reason) => {
 	console.error("[TELEGRAM UNHANDLED REJECTION]", reason);
 });
@@ -49,20 +52,21 @@ async function main(): Promise<void> {
 		process.exit(0);
 	});
 
-	console.log("Starting Telegram Bot...");
-	await bot.start({
-		onStart: (botInfo) => {
-			const info = {
-				pid: process.pid,
-				botUsername: botInfo.username,
-				botId: botInfo.id,
-				apiUrl: config.apiUrl,
-				startedAt: new Date().toISOString(),
-			};
-			writeFileSync(gatewayInfoPath, JSON.stringify(info, null, 2), { mode: 0o600 });
-			console.log(`✨ Prime Agent Telegram bot is live as @${botInfo.username}!`);
-		},
-	});
+		const info: Record<string, any> = {
+		pid: process.pid,
+		apiUrl: config.apiUrl,
+		startedAt: new Date().toISOString(),
+	};
+	writeFileSync(gatewayInfoPath, JSON.stringify(info, null, 2), { mode: 0o600 });
+
+	console.log("Initializing Telegram Bot...");
+	await bot.init();
+	info.botUsername = bot.botInfo.username;
+	info.botId = bot.botInfo.id;
+	writeFileSync(gatewayInfoPath, JSON.stringify(info, null, 2), { mode: 0o600 });
+	console.log(`✨ Prime Agent Telegram bot is live as @${bot.botInfo.username}!`);
+
+	await bot.start();
 }
 
 main().catch((err) => {

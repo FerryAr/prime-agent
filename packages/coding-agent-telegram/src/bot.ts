@@ -146,27 +146,11 @@ async function sendTelegramMessageSafe(
 }
 
 export function createTelegramBot(config: BotConfig, apiClient: PrimeApiClient): Bot {
-	const bot = new Bot(config.botToken);
+	const bot = new Bot(config.botToken, { client: { fetch: globalThis.fetch } });
 	bot.catch((err) => {
 		console.error("[GRAMMY ERROR in bot update]", err);
 	});
-	void bot.api.setMyCommands([
-		{ command: "menu", description: "Tampilkan menu tombol quick-action" },
-		{ command: "status", description: "Status sesi, model & token usage" },
-		{ command: "track", description: "Pantau & notifikasi tugas aktif" },
-		{ command: "sessions", description: "Daftar & ganti sesi aktif" },
-		{ command: "history", description: "Lihat 5 percakapan terakhir" },
-		{ command: "model", description: "Ganti model & provider AI" },
-		{ command: "thinking", description: "Atur thinking level (off/high/max)" },
-		{ command: "ls", description: "Browser file & unduh file workspace" },
-		{ command: "diff", description: "Lihat git diff sesi saat ini" },
-		{ command: "rename", description: "Ganti nama sesi saat ini" },
-		{ command: "side", description: "Tanya sekilas tanpa menambah konteks" },
-		{ command: "export", description: "Ekspor riwayat sesi ke Markdown" },
-		{ command: "new", description: "Mulai sesi baru" },
-		{ command: "abort", description: "Hentikan proses yang berjalan" },
-		{ command: "help", description: "Panduan penggunaan bot" },
-	]).catch(() => undefined);
+	// Slash commands registered once
 
 	const userActiveSessions = loadSavedUserSessions();
 	const activeUserUnsubscribes = new Map<number, () => void>();
@@ -195,6 +179,31 @@ export function createTelegramBot(config: BotConfig, apiClient: PrimeApiClient):
 			await ctx.reply(`⛔ Unauthorized.`);
 			return;
 		}
+
+		// Normalize keyboard buttons directly to slash commands in-place without update re-injection:
+		if (ctx.message?.text) {
+			const buttonMap: Record<string, string> = {
+				"⚙️ Menu": "/menu",
+				"📊 Status": "/status",
+				"📋 Sessions": "/sessions",
+				"📜 History": "/history",
+				"🤖 Model": "/model",
+				"💭 Thinking": "/thinking",
+				"📂 Files (/ls)": "/ls",
+				"➕ New Session": "/new",
+				"🔍 Git Diff": "/diff",
+				"🛑 Abort": "/abort",
+				"🤖 Subagents": "/subagents",
+				"❓ Side Question": "/side",
+				"📄 Export": "/export",
+			};
+			const mapped = buttonMap[ctx.message.text.trim()];
+			if (mapped) {
+				ctx.message.text = mapped;
+				ctx.message.entities = [{ type: "bot_command", offset: 0, length: mapped.length }];
+			}
+		}
+
 		return next();
 	});
 
@@ -1631,74 +1640,6 @@ if (data.startsWith("switch:")) {
 	bot.on("message:text", async (ctx) => {
 		const promptText = ctx.message.text.trim();
 		const userId = ctx.from.id;
-
-		switch (promptText) {
-						case "⚙️ Menu":
-				return (bot as any).handleUpdate({
-					...ctx.update,
-					message: { ...ctx.message, text: "/menu", entities: [{ type: "bot_command", offset: 0, length: 5 }] }
-				});
-			case "📊 Status":
-				return (bot as any).handleUpdate({
-					...ctx.update,
-					message: { ...ctx.message, text: "/status", entities: [{ type: "bot_command", offset: 0, length: 7 }] }
-				});
-			case "📋 Sessions":
-				return (bot as any).handleUpdate({
-					...ctx.update,
-					message: { ...ctx.message, text: "/sessions", entities: [{ type: "bot_command", offset: 0, length: 9 }] }
-				});
-			case "📜 History":
-				return (bot as any).handleUpdate({
-					...ctx.update,
-					message: { ...ctx.message, text: "/history", entities: [{ type: "bot_command", offset: 0, length: 8 }] }
-				});
-			case "🤖 Model":
-				return (bot as any).handleUpdate({
-					...ctx.update,
-					message: { ...ctx.message, text: "/model", entities: [{ type: "bot_command", offset: 0, length: 6 }] }
-				});
-			case "💭 Thinking":
-				return (bot as any).handleUpdate({
-					...ctx.update,
-					message: { ...ctx.message, text: "/thinking", entities: [{ type: "bot_command", offset: 0, length: 9 }] }
-				});
-			case "📂 Files (/ls)":
-				return (bot as any).handleUpdate({
-					...ctx.update,
-					message: { ...ctx.message, text: "/ls", entities: [{ type: "bot_command", offset: 0, length: 3 }] }
-				});
-			case "➕ New Session":
-				return (bot as any).handleUpdate({
-					...ctx.update,
-					message: { ...ctx.message, text: "/new", entities: [{ type: "bot_command", offset: 0, length: 4 }] }
-				});
-			case "🔍 Git Diff":
-				return (bot as any).handleUpdate({
-					...ctx.update,
-					message: { ...ctx.message, text: "/diff", entities: [{ type: "bot_command", offset: 0, length: 5 }] }
-				});
-			case "🛑 Abort":
-				return (bot as any).handleUpdate({
-					...ctx.update,
-					message: { ...ctx.message, text: "/abort", entities: [{ type: "bot_command", offset: 0, length: 6 }] }
-				});
-			case "🤖 Subagents":
-				return (bot as any).handleUpdate({
-					...ctx.update,
-					message: { ...ctx.message, text: "/subagents", entities: [{ type: "bot_command", offset: 0, length: 10 }] }
-				});
-			case "❓ Side Question":
-				return (bot as any).handleUpdate({
-					...ctx.update,
-					message: { ...ctx.message, text: "/side", entities: [{ type: "bot_command", offset: 0, length: 5 }] }
-				});
-			case "📄 Export":
-				return (bot as any).handleUpdate({
-					...ctx.update,
-					message: { ...ctx.message, text: "/export", entities: [{ type: "bot_command", offset: 0, length: 7 }] }
-				});
-		}
 
 		let sessionId: string;
 		try {
