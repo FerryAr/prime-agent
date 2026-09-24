@@ -48,6 +48,8 @@ function harness(apiMock) {
 		appendNode: (node) => { appendedNodes.push(node); },
 		addTimestamp: (node, ts) => { node.dataset = node.dataset || {}; node.dataset.ts = ts; },
 		scroll: () => {},
+		updateSubagentIndicator: () => {},
+		createErrorCard: (e) => ({ className: "card error-card", textContent: String(e) }),
 		api: apiMock || (async () => ({ messages: [] })),
 		openModal: ({ title, message, build }) => {
 			const bodyNodes = [];

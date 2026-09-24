@@ -21,6 +21,9 @@ await build({
 	bundle: true,
 	platform: "node",
 	format: "esm",
+	banner: {
+		js: "import { createRequire as __piBundleCreateRequire } from 'node:module'; const require = __piBundleCreateRequire(import.meta.url);",
+	},
 	tsconfig: join(pkgDir, "tsconfig.json"),
 	external: [
 		"@opentelemetry/api",

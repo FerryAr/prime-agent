@@ -12,7 +12,7 @@ const names = [
 	"hydrateStreamingMessage", "applySessionSnapshot", "attach", "refreshModelPicker", "resync", "renderMessages",
 	"loadEarlierMessages", "updateLoadEarlierBar", "isConversationalTurn", "getTurnBoundaryIndices",
 	"updateConnectionStatus", "sessionIdentity", "sessionIsWorking", "isCurrentActiveSession", "checkBackgroundSessionCompletions",
-	"renderGoalBanner",
+	"renderGoalBanner", "parseDetailedError", "createErrorCard",
 ];
 // Exercise the shipped functions without booting the unrelated DOM controls.
 const bodies = names.map((name) => {

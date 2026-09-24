@@ -30,7 +30,7 @@ function createMockElement(tag, cls, text) {
 		className: cls || "",
 		textContent: text || "",
 		children,
-		dataset: {},
+		dataset: {}, style: {}, align: "",
 		classList: {
 			add: (c) => classList.add(c),
 			remove: (c) => classList.delete(c),
@@ -265,4 +265,43 @@ test("loose asterisks in math or spacing (* *) are not treated as italic", () =>
 	ctx.renderInline(parent, "Formula: a * b * c or bold * * should stay as plain text");
 	const em = parent.children.find((c) => c.tagName === "EM");
 	assert.equal(em, undefined, "Asterisks surrounded by spaces must not trigger italic");
+});
+
+test("block math $$...$$ parses into .math-block and preserves formula", () => {
+	const ctx = harness();
+	const md = "$$\\text{Cost Input} = \\frac{\\text{Harga}}{1000} \\times \\text{Token}$$";
+	const fragment = ctx.renderMarkdown(md);
+	const mathBlock = fragment.children.find((c) => c.className === "math-block");
+	assert.ok(mathBlock, "Expected .math-block element");
+	assert.ok(mathBlock.textContent.includes("Cost Input"), "Math content should be preserved");
+	assert.ok(mathBlock.textContent.includes("frac"), "Math latex code should be preserved");
+});
+
+test("inline math $...$ inside paragraph parses into .math-inline", () => {
+	const ctx = harness();
+	const parent = createMockElement("div");
+	ctx.renderInline(parent, "Rumus $E = mc^2$ sangat terkenal.");
+	const mathSpan = parent.children.find((c) => c.className === "math-inline");
+	assert.ok(mathSpan, "Expected .math-inline element");
+	assert.ok(mathSpan.textContent.includes("E = mc^2"));
+});
+
+test("tables with alignment colons apply style.textAlign to headers and cells", () => {
+	const ctx = harness();
+	const md = [
+		"| Left | Center | Right |",
+		"| :--- | :---: | ---: |",
+		"| A | B | C |",
+	].join("\n");
+	const fragment = ctx.renderMarkdown(md);
+	const table = fragment.children.find((c) => c.className === "md-table-wrap")?.children?.find((c) => c.tagName === "TABLE");
+	assert.ok(table);
+	const ths = table.children[0].children.filter((c) => c.tagName === "TH");
+	assert.equal(ths[0].style.textAlign, "left");
+	assert.equal(ths[1].style.textAlign, "center");
+	assert.equal(ths[2].style.textAlign, "right");
+	const tds = table.children[1].children.filter((c) => c.tagName === "TD");
+	assert.equal(tds[0].style.textAlign, "left");
+	assert.equal(tds[1].style.textAlign, "center");
+	assert.equal(tds[2].style.textAlign, "right");
 });

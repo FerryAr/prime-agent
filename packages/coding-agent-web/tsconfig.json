@@ -28,6 +28,12 @@
       ],
       "@earendil-works/pi-tui/*": [
         "../tui/src/*"
+      ],
+      "@earendil-works/prime-agent-api": [
+        "../coding-agent-api/src/index.ts"
+      ],
+      "@earendil-works/prime-agent-api/*": [
+        "../coding-agent-api/src/*"
       ]
     }
   },
