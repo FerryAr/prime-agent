@@ -486,9 +486,11 @@ export function createTelegramBot(config: BotConfig, apiClient: PrimeApiClient):
 
 	bot.command("menu", async (ctx) => {
 		const { text: menuText, keyboard } = buildFullFeatureInlineMenu();
-		await ctx.reply(menuText, {
-			parse_mode: "HTML",
-			reply_markup: keyboard,
+		await sendTelegramMessageSafe(async () => {
+			return await ctx.reply(menuText, {
+				parse_mode: "HTML",
+				reply_markup: keyboard,
+			});
 		});
 	});
 
@@ -719,19 +721,25 @@ export function createTelegramBot(config: BotConfig, apiClient: PrimeApiClient):
 		try {
 			const list = await apiClient.getSessions();
 			if (list.length === 0) {
-				await ctx.reply("No sessions found. Send /new to create one.");
+				await sendTelegramMessageSafe(async () => {
+					return await ctx.reply("No sessions found. Send /new to create one.");
+				});
 				return;
 			}
 
 			const currentId = userActiveSessions.get(ctx.from!.id);
 			const { text: menuText, keyboard } = buildSessionsMenu(list, 0, currentId);
 
-			await ctx.reply(menuText, {
-				parse_mode: "HTML",
-				reply_markup: keyboard,
+			await sendTelegramMessageSafe(async () => {
+				return await ctx.reply(menuText, {
+					parse_mode: "HTML",
+					reply_markup: keyboard,
+				});
 			});
 		} catch (err: any) {
-			await ctx.reply(`❌ Failed to list sessions: ${err.message}`);
+			await sendTelegramMessageSafe(async () => {
+				return await ctx.reply(`❌ Failed to list sessions: ${err.message}`);
+			});
 		}
 	});
 
