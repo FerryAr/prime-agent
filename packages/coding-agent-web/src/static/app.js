@@ -989,7 +989,6 @@ function ensureAudio() {
 function playDoneSound() {
 	if (!soundEnabled) return;
 	try {
-		ensureAudio();
 		const playHtmlAudio = () => {
 			try {
 				const a = new Audio(DONE_SOUND_URL);
@@ -1000,6 +999,14 @@ function playDoneSound() {
 			}
 		};
 
+		// In background tabs (hidden), AudioContext is suspended by the browser.
+		// HTML5 Audio element can play reliably in background tabs.
+		if (typeof document !== "undefined" && (document.hidden || document.visibilityState === "hidden")) {
+			playHtmlAudio();
+			return;
+		}
+
+		ensureAudio();
 		if (!audioCtx) {
 			playHtmlAudio();
 			return;
@@ -1024,7 +1031,27 @@ function playDoneSound() {
 		};
 
 		if (audioCtx.state === "suspended") {
-			audioCtx.resume().then(play).catch(playHtmlAudio);
+			// In case resume stays pending, race with a 250ms fallback to HTML5 Audio:
+			let resolved = false;
+			const timer = setTimeout(() => {
+				if (!resolved) {
+					resolved = true;
+					playHtmlAudio();
+				}
+			}, 250);
+			audioCtx.resume().then(() => {
+				if (!resolved) {
+					clearTimeout(timer);
+					resolved = true;
+					play();
+				}
+			}).catch(() => {
+				if (!resolved) {
+					clearTimeout(timer);
+					resolved = true;
+					playHtmlAudio();
+				}
+			});
 		} else {
 			play();
 		}
@@ -1108,6 +1135,7 @@ function showToast(title, body, kind) {
 
 async function notifyViaBrowser(body, title = "Agent finished") {
 	try {
+		const isSilent = !soundEnabled;
 		if ("serviceWorker" in navigator) {
 			const registration = await navigator.serviceWorker.getRegistration();
 			if (registration) {
@@ -1115,6 +1143,7 @@ async function notifyViaBrowser(body, title = "Agent finished") {
 					body,
 					icon: NOTIFICATION_ICON,
 					tag: "prime-agent-done",
+					silent: isSilent,
 				});
 				return;
 			}
@@ -1123,6 +1152,7 @@ async function notifyViaBrowser(body, title = "Agent finished") {
 			body,
 			icon: NOTIFICATION_ICON,
 			tag: "prime-agent-done",
+			silent: isSilent,
 		});
 		n.onclick = () => {
 			window.focus();
@@ -5215,8 +5245,10 @@ const SIDEBAR_POLL_MS = 5_000;
 let lastStreamWatchdogCheck = Date.now();
 
 setInterval(() => {
-	if (document.visibilityState !== "visible") return;
+	// Always refresh sessions so checkBackgroundSessionCompletions detects when
+	// background or closed sessions finish, even while this tab is hidden/backgrounded!
 	void refreshSessions().catch(() => undefined);
+	if (document.visibilityState !== "visible") return;
 
 	// Stream health watchdog
 	if (active) {
