@@ -893,6 +893,7 @@ impl Worker {
             "messages": Value::Null,
             "lastEventSequence": last_event_sequence,
             "lastEventCursor": cursor,
+            // RLM child roster
             // RLM child roster; empty for top-level daemon sessions.
             "children": [],
         });

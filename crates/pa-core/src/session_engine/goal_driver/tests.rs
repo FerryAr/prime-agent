@@ -1089,6 +1089,7 @@ fn restore_persisted_adopts_the_state_without_rewriting_it() {
         goal_id: Some("goal-1".to_string()),
         objective: Some("ship the port".to_string()),
         token_budget: Some(1000),
+        max_turns: None,
         tokens_used: 340,
         time_used_seconds: 12,
         continuations_used: 2,

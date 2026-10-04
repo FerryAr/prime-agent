@@ -158,6 +158,10 @@ impl RlmSubagentHost for SupervisorChildSessions {
             }
             .await;
             let (record, created, model) = admission?;
+            {
+                let r_guard = record.lock().await;
+                this.notify_child_update(&r_guard);
+            }
             // The reservation's guard is still bound: the release runs at
             // this scope's end (a successful registration made the name
             // durable - it transfers from the pending reservation to the

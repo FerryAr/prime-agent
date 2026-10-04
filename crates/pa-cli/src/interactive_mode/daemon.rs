@@ -68,7 +68,14 @@ pub async fn ensure_daemon_running(socket_path: &Path, spawn_cwd: &Path) -> Resu
         DaemonProbe::Stale(client) => shutdown_stale_daemon(*client, socket_path).await?,
         DaemonProbe::Absent => {}
     }
-    let exe = std::env::current_exe().context("resolve the prime-agent executable")?;
+    let mut exe = std::env::current_exe().context("resolve the prime-agent executable")?;
+    let exe_str = exe.to_string_lossy().to_string();
+    if let Some(clean) = exe_str.strip_suffix(" (deleted)") {
+        let clean_path = std::path::PathBuf::from(clean);
+        if clean_path.exists() {
+            exe = clean_path;
+        }
+    }
     ensure_daemon_running_with(&exe, socket_path, spawn_cwd).await
 }
 

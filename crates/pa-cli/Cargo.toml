@@ -11,10 +11,13 @@ pa-core = { path = "../pa-core" }
 pa-ai = { path = "../pa-ai" }
 pa-agent = { path = "../pa-agent" }
 pa-daemon = { path = "../pa-daemon" }
+pa-api = { path = "../pa-api" }
+pa-telegram = { path = "../pa-telegram" }
 pa-tui = { path = "../pa-tui" }
 pa-telemetry = { path = "../pa-telemetry" }
 uuid = { version = "1", features = ["v4", "v7"] }
 tokio = { workspace = true }
+libc = "0.2"
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

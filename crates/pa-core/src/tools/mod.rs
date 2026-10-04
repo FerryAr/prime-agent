@@ -30,3 +30,5 @@ pub(crate) mod shell_utils;
 pub(crate) mod tool_definition;
 #[allow(dead_code)] // util module; fully exercised by unit + golden tests
 pub(crate) mod truncate;
+
+pub mod lean_ctx;

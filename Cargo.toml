@@ -10,6 +10,8 @@ members = [
     "crates/pa-daemon",
     "crates/pa-tui",
     "crates/pa-cli",
+    "crates/pa-api",
+    "crates/pa-telegram",
 ]
 
 # Crossterm 0.28.1's kitty support check holds the process-wide event reader
@@ -138,3 +140,15 @@ used_underscore_binding = "warn"
 lto = "thin"
 codegen-units = 4
 debug = "line-tables-only"
+
+[profile.dev]
+debug = 0
+incremental = true
+codegen-units = 16
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.test]
+debug = 0
+incremental = true

@@ -24,6 +24,9 @@
 
 // Internal ported modules are crate-private: the only public API is the
 // runtime boundary below (see crates/pa-cli/README.md).
+pub(crate) mod api_command;
+pub(crate) mod telegram_command;
+pub(crate) mod web_command;
 pub(crate) mod args;
 pub(crate) mod client_settings;
 pub(crate) mod client_traces;

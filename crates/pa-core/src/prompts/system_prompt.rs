@@ -211,6 +211,15 @@ pub fn system_prompt_breakdown(options: &BuildSystemPromptOptions) -> SystemProm
         ));
     }
 
+    if tools.contains(&"ctx_shell") || tools.contains(&"ctx_read") {
+        let lean_prompt = "# lean-ctx Native Tools\n\n            For project work, prefer the native lean-ctx tools instead of raw shell/cat/grep operations to save context tokens:\n            - Use `ctx_read` for reading project files with token compression (signatures / full / lines:N-M).\n            - Use `ctx_search` for searching text and regex patterns across the codebase.\n            - Use `ctx_shell` for executing commands with compressed output.\n            - Use `ctx_skill_read` for verbatim reading of SKILL.md files.\n            The `ipython` tool remains available for Python execution, persistence, and delegation.";
+        segments.push(PromptSegment::dynamic_segment(
+            "lean-ctx-routing",
+            "lean-ctx token optimization tools",
+            lean_prompt.to_string(),
+        ));
+    }
+
     let guidelines = options
         .prompt_guidelines
         .as_deref()

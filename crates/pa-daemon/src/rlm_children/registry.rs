@@ -84,6 +84,7 @@ impl SupervisorChildSessionsInner {
                 record.notice_delivered = true;
                 record.settled_status = Some("cancelled");
                 record.error = Some("Cancelled by user".to_string());
+                self.notify_child_update(&record);
             }
             // Capture before the abort: the completed turns' usage (the
             // aborted turn's partial row folds nowhere — TS skips

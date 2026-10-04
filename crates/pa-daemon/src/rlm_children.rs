@@ -379,6 +379,8 @@ struct SupervisorChildSessionsInner {
     /// `/context` children immediately, not ride out the next background
     /// refresh.
     delete_notifier: std::sync::Mutex<Option<DeleteNotifier>>,
+    /// Child status update notifier to push `rlm_child_update` session events.
+    pub(crate) update_notifier: std::sync::Mutex<Option<Arc<dyn Fn(Value) + Send + Sync>>>,
     /// The parent session's semantic-edge recorder (wired once the session
     /// engine is built; the settle watcher records a returned child's last
     /// committed request into it). `None` until the build or for sessions
@@ -420,6 +422,7 @@ impl SupervisorChildSessions {
                 model_refusal_telemetry,
                 usage_sink: std::sync::Mutex::new(None),
                 delete_notifier: std::sync::Mutex::new(None),
+                update_notifier: std::sync::Mutex::new(None),
                 semantic_edges: std::sync::Mutex::new(None),
             }),
         }
@@ -439,6 +442,14 @@ impl SupervisorChildSessions {
             .delete_notifier
             .lock()
             .expect("delete notifier lock") = Some(notifier);
+    }
+
+    pub fn set_update_notifier(&self, notifier: Arc<dyn Fn(Value) + Send + Sync>) {
+        *self
+            .inner
+            .update_notifier
+            .lock()
+            .expect("update notifier lock") = Some(notifier);
     }
 
     /// The worker saw the parent's turn end: release prompt tasks waiting
@@ -858,6 +869,31 @@ impl SupervisorChildSessions {
 }
 
 impl SupervisorChildSessionsInner {
+    pub(crate) fn notify_child_update(&self, record: &ChildRecord) {
+        if let Some(notifier) = self.update_notifier.lock().ok().and_then(|g| g.clone()) {
+            let model = self.identity.lock().ok().and_then(|id| id.model.clone());
+            let mut snapshot = json!({
+                "id": record.rlm_child_id,
+                "activeSessionId": record.active_session_id,
+                "sessionName": record.session_name,
+                "label": record.label,
+                "status": record.status(),
+                "durationMs": now_ms().saturating_sub(record.started_at_ms),
+                "sessionDir": record.session_dir,
+            });
+            if let Some(model) = &model {
+                snapshot["model"] = json!(model);
+            }
+            if let Some(answer) = &record.answer_preview {
+                snapshot["answerPreview"] = json!(answer);
+            }
+            if let Some(error) = &record.error {
+                snapshot["error"] = json!(error);
+            }
+            notifier(snapshot);
+        }
+    }
+
     /// Fire the settle hook off-thread (the settle sites run inside
     /// watcher tasks; the hook owns its own scheduling). The funnel is
     /// the one definition of a settled run (TS's run task `finally`): it

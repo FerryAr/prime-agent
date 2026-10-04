@@ -48,6 +48,8 @@ pub struct GoalState {
     pub objective: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token_budget: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_turns: Option<u64>,
     pub tokens_used: u64,
     pub time_used_seconds: u64,
     pub continuations_used: u64,
@@ -89,6 +91,7 @@ pub fn empty_goal_state() -> GoalState {
         goal_id: None,
         objective: None,
         token_budget: None,
+        max_turns: None,
         tokens_used: 0,
         time_used_seconds: 0,
         continuations_used: 0,

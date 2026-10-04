@@ -241,6 +241,43 @@ pub const COMMAND_SPECS: &[CommandSpec] = &[
         "session export <file> [output]",
         "Export a saved session to HTML",
     ),
+    CommandSpec::new(
+        &["api"],
+        "api [--port <port>] [--host <host>] [--token <token>] [--stop|--restart|--status]",
+        "Start, stop, or inspect the Prime Agent headless API gateway",
+    )
+    .options(&[
+        "--port <port>   Port to listen on (default: 4677)",
+        "--host <host>   Host to bind on (default: 0.0.0.0)",
+        "--token <token> API authentication token",
+        "--stop          Stop the running API gateway",
+        "--restart       Restart the API gateway",
+        "--status        Show whether the API gateway is running",
+    ]),
+    CommandSpec::new(
+        &["telegram"],
+        "telegram [--token <token>] [--user-id <id>] [--api-url <url>] [--stop|--restart|--status]",
+        "Start, stop, or inspect the Prime Agent Telegram bot",
+    )
+    .options(&[
+        "--token <token>    Telegram Bot token",
+        "--user-id <id>     Numeric Telegram User ID whitelist",
+        "--api-url <url>    Prime Agent API URL (default: http://127.0.0.1:4677)",
+        "--stop             Stop the running Telegram bot",
+        "--restart          Restart the Telegram bot",
+        "--status           Show whether the Telegram bot is running",
+    ]),
+    CommandSpec::new(
+        &["web"],
+        "web [--no-open] [--stop|--restart|--status]",
+        "Open, stop, or restart the Prime Agent web interface",
+    )
+    .options(&[
+        "--no-open    Print the web UI URL without opening a browser",
+        "--stop       Stop the running web interface",
+        "--restart    Restart the web interface",
+        "--status     Show whether the web interface is running",
+    ]),
     CommandSpec::new(&["config"], "config", "Configure package resources"),
     CommandSpec::new(
         &["factory"],

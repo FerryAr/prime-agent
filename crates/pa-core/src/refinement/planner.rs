@@ -131,11 +131,317 @@ pub fn extract_json_object(text: &str) -> Result<serde_json::Value, String> {
     Err("Refiner did not return a JSON object".to_string())
 }
 
+fn normalize_action(raw: Option<&str>) -> Option<RefinementAction> {
+    let raw = raw?;
+    let lower = raw.trim().to_lowercase();
+    match lower.as_str() {
+        "add" | "insert" | "new" | "create" | "make" | "append" => Some(RefinementAction::Create),
+        "edit" | "modify" | "patch" | "update" | "change" | "put" | "set" => Some(RefinementAction::Update),
+        "remove" | "del" | "delete" | "drop" | "rm" | "clear" => Some(RefinementAction::Delete),
+        _ => None,
+    }
+}
+
+fn extract_action(edit: &serde_json::Map<String, serde_json::Value>) -> Option<RefinementAction> {
+    for key in &["action", "op", "operation", "verb", "command", "type"] {
+        if let Some(val) = edit.get(*key).and_then(|v| v.as_str()) {
+            if let Some(act) = normalize_action(Some(val)) {
+                return Some(act);
+            }
+        }
+    }
+    None
+}
+
+fn normalize_kind(raw: Option<&str>) -> (Option<RefinementKind>, Option<String>) {
+    let Some(raw) = raw else {
+        return (Some(RefinementKind::Memory), None);
+    };
+    let lower = raw.trim().to_lowercase();
+    match lower.as_str() {
+        "prompts" | "prompt" | "instruction" | "policy" | "rule" | "rules" | "system" => {
+            (Some(RefinementKind::Prompt), None)
+        }
+        "skills" | "skill" | "tool" | "tools" | "function" | "functions" => {
+            (Some(RefinementKind::Skill), None)
+        }
+        "subagents" | "subagent" | "agent" | "agents" => {
+            (Some(RefinementKind::Subagent), None)
+        }
+        "memories" | "memory" | "facts" | "knowledge" => {
+            (Some(RefinementKind::Memory), None)
+        }
+        "general" | "fact" | "decision" | "lesson" | "preference" => {
+            (Some(RefinementKind::Memory), Some(lower))
+        }
+        _ => (Some(RefinementKind::Memory), Some(lower)),
+    }
+}
+
+fn extract_kind(edit: &serde_json::Map<String, serde_json::Value>) -> (Option<RefinementKind>, Option<String>) {
+    for key in &["kind", "layer", "type", "component", "category"] {
+        if let Some(val) = edit.get(*key).and_then(|v| v.as_str()) {
+            return normalize_kind(Some(val));
+        }
+    }
+    (Some(RefinementKind::Memory), None)
+}
+
+fn clean_id(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let s = if let Some(stripped) = trimmed.strip_prefix("local:") {
+        stripped.trim()
+    } else if let Some(stripped) = trimmed.strip_prefix("global:") {
+        stripped.trim()
+    } else {
+        trimmed
+    };
+    if s.is_empty() {
+        None
+    } else {
+        Some(s.to_string())
+    }
+}
+
+fn find_bracket_id(text: &str) -> Option<String> {
+    for prefix in &["[local:", "(local:", "[global:", "(global:"] {
+        if let Some(start) = text.find(prefix) {
+            let after = &text[start + prefix.len()..];
+            let closing = if prefix.starts_with('[') { ']' } else { ')' };
+            if let Some(end) = after.find(closing) {
+                let candidate = &after[..end];
+                if candidate.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+                    return clean_id(candidate);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn extract_action_mention(text: &str) -> Option<String> {
+    let lower = text.to_lowercase();
+    let keywords = [
+        "update", "updating", "modify", "modifying", "patch", "patching",
+        "delete", "deleting", "remove", "removing", "refine", "refining",
+    ];
+    let ignored = [
+        "the", "a", "an", "this", "that", "entry", "entries", "memory", "memories",
+        "prompt", "prompts", "skill", "skills", "subagent", "subagents", "to", "from",
+        "harness", "continual", "state", "with", "for", "and",
+    ];
+    for kw in &keywords {
+        if let Some(idx) = lower.find(kw) {
+            let after = &text[idx + kw.len()..];
+            let parts: Vec<&str> = after.split_whitespace().collect();
+            for part in parts.iter().take(5) {
+                let cleaned = part.trim_matches(|c: char| {
+                    c == '`' || c == '[' || c == ']' || c == '*' || c == '"' || c == '\'' || c == '(' || c == ')'
+                });
+                let id_candidate = cleaned
+                    .strip_prefix("local:")
+                    .or_else(|| cleaned.strip_prefix("global:"))
+                    .unwrap_or(cleaned);
+                let candidate_lower = id_candidate.to_lowercase();
+                if ignored.contains(&candidate_lower.as_str()) {
+                    continue;
+                }
+                if id_candidate.len() >= 3
+                    && id_candidate.len() <= 60
+                    && id_candidate.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+                {
+                    return clean_id(id_candidate);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn extract_id(edit: &serde_json::Map<String, serde_json::Value>, context_text: Option<&str>) -> Option<String> {
+    for key in &[
+        "id", "name", "key", "slug", "identifier", "target", "entry",
+        "entryId", "entry_id", "targetId", "target_id", "itemId", "item_id",
+        "item", "ref", "originalId", "original_id", "existingId", "existing_id",
+        "sourceId", "source_id",
+    ] {
+        if let Some(val) = edit.get(*key) {
+            if let Some(s) = val.as_str() {
+                if let Some(id) = clean_id(s) {
+                    return Some(id);
+                }
+            } else if let Some(obj) = val.as_object() {
+                for sub in &["id", "name", "key", "slug"] {
+                    if let Some(s) = obj.get(*sub).and_then(|v| v.as_str()) {
+                        if let Some(id) = clean_id(s) {
+                            return Some(id);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(val) = edit.get("reference").and_then(|v| v.as_str()) {
+        if let Some(id) = clean_id(val) {
+            return Some(id);
+        }
+    }
+
+    if let Some(p) = edit.get("path").and_then(|v| v.as_str()) {
+        let trimmed = p.trim();
+        if !trimmed.contains('/') && trimmed.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+            if trimmed.contains('_') || trimmed.starts_with("local:") || trimmed.starts_with("global:") {
+                if let Some(id) = clean_id(trimmed) {
+                    return Some(id);
+                }
+            }
+        }
+    }
+
+    if let Some(title) = edit.get("title").and_then(|v| v.as_str()) {
+        if let Some(id) = find_bracket_id(title) {
+            return Some(id);
+        }
+    }
+
+    if let Some(content) = edit.get("content").and_then(|v| v.as_str()) {
+        let slice = if content.len() > 200 { &content[..200] } else { content };
+        if let Some(id) = find_bracket_id(slice) {
+            return Some(id);
+        }
+    }
+
+    for key in &["reason", "notes", "explanation", "rationale"] {
+        if let Some(s) = edit.get(*key).and_then(|v| v.as_str()) {
+            if let Some(id) = extract_action_mention(s) {
+                return Some(id);
+            }
+        }
+    }
+
+    if let Some(ctx) = context_text {
+        if let Some(id) = extract_action_mention(ctx) {
+            return Some(id);
+        }
+    }
+
+    None
+}
+
+fn extract_title(edit: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
+    for key in &["title", "header", "subject", "label", "heading"] {
+        if let Some(s) = edit.get(*key).and_then(|v| v.as_str()) {
+            let trimmed = s.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    if let Some(name) = edit.get("name").and_then(|v| v.as_str()) {
+        let trimmed = name.trim();
+        let id_val = edit.get("id").and_then(|v| v.as_str());
+        if !trimmed.is_empty() && id_val.is_some() && id_val != Some(trimmed) {
+            return Some(trimmed.to_string());
+        }
+    }
+    None
+}
+
+fn extract_content(edit: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
+    for key in &[
+        "content", "value", "text", "body", "description", "desc",
+        "note", "notes", "details", "detail", "data", "instruction",
+        "instructions", "rule", "rules", "statement", "memory", "prompt",
+    ] {
+        if let Some(val) = edit.get(*key) {
+            if let Some(s) = val.as_str() {
+                let trimmed = s.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            } else if let Some(arr) = val.as_array() {
+                let joined: Vec<String> = arr
+                    .iter()
+                    .filter_map(|item| {
+                        if let Some(s) = item.as_str() {
+                            Some(s.to_string())
+                        } else {
+                            serde_json::to_string(item).ok()
+                        }
+                    })
+                    .collect();
+                let res = joined.join("\n").trim().to_string();
+                if !res.is_empty() {
+                    return Some(res);
+                }
+            } else if let Some(obj) = val.as_object() {
+                for inner_key in &["text", "content", "value"] {
+                    if let Some(inner) = obj.get(*inner_key).and_then(|v| v.as_str()) {
+                        let trimmed = inner.trim();
+                        if !trimmed.is_empty() {
+                            return Some(trimmed.to_string());
+                        }
+                    }
+                }
+                if let Ok(pretty) = serde_json::to_string_pretty(val) {
+                    if pretty != "{}" {
+                        return Some(pretty);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn derive_title(
+    raw_title: Option<String>,
+    content: Option<&str>,
+    id: Option<&str>,
+    kind: RefinementKind,
+) -> String {
+    if let Some(t) = raw_title {
+        let trimmed = t.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    if let Some(raw_id) = id {
+        let trimmed = raw_id.trim();
+        if !trimmed.is_empty() {
+            return trimmed.replace('_', " ");
+        }
+    }
+    if let Some(cnt) = content {
+        if let Some(first_line) = cnt.lines().next() {
+            let cleaned = first_line
+                .trim()
+                .trim_start_matches(|c: char| c == '#' || c == '*' || c == '-' || c.is_whitespace())
+                .trim();
+            if !cleaned.is_empty() {
+                return cleaned.chars().take(60).collect();
+            }
+        }
+    }
+    format!("{} item", kind_name(kind))
+}
+
 /// Normalize an untrusted proposal, preserving invalid edit fields for
 /// apply-time validation.
 #[must_use]
 pub fn normalize_refinement_proposal(value: &serde_json::Value) -> RefinementProposal {
-    let record = value.as_object().cloned().unwrap_or_default();
+    let (record, top_array) = if let Some(arr) = value.as_array() {
+        (serde_json::Map::default(), Some(arr.clone()))
+    } else if let Some(obj) = value.as_object() {
+        (obj.clone(), None)
+    } else {
+        (serde_json::Map::default(), None)
+    };
+
     let string_field = |key: &str, fallback: &str| -> String {
         record
             .get(key)
@@ -143,21 +449,98 @@ pub fn normalize_refinement_proposal(value: &serde_json::Value) -> RefinementPro
             .unwrap_or(fallback)
             .to_string()
     };
-    let edits = record
-        .get("edits")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default()
+
+    let summary = string_field("summary", "Refined continual harness state");
+    let rationale = record
+        .get("rationale")
+        .or_else(|| record.get("reason"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let expected_outcome = record
+        .get("expectedOutcome")
+        .or_else(|| record.get("outcome"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let context_text = format!("{summary} {rationale}").trim().to_string();
+    let context_opt = if context_text.is_empty() {
+        None
+    } else {
+        Some(context_text.as_str())
+    };
+
+    let raw_edits_array = top_array
+        .or_else(|| {
+            for key in &["edits", "changes", "items", "entries", "proposals"] {
+                if let Some(arr) = record.get(*key).and_then(|v| v.as_array()) {
+                    return Some(arr.clone());
+                }
+            }
+            None
+        })
+        .unwrap_or_default();
+
+    let edits = raw_edits_array
         .iter()
-        .filter_map(|edit| {
-            edit.as_object()?;
-            serde_json::from_value::<RefinementEdit>(edit.clone()).ok()
+        .filter_map(|item| {
+            let edit_obj = item.as_object()?;
+            let action = extract_action(edit_obj).or(Some(RefinementAction::Create));
+            let (kind, suggested_path) = extract_kind(edit_obj);
+            let raw_id = extract_id(edit_obj, context_opt);
+            let raw_title = extract_title(edit_obj);
+            let content = extract_content(edit_obj);
+            let kind_val = kind.unwrap_or(RefinementKind::Memory);
+            let title = Some(derive_title(
+                raw_title,
+                content.as_deref(),
+                raw_id.as_deref(),
+                kind_val,
+            ));
+
+            let path = edit_obj
+                .get("path")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .or(suggested_path);
+
+            let reference = edit_obj
+                .get("reference")
+                .and_then(|v| v.as_object())
+                .cloned();
+            let arguments = edit_obj
+                .get("arguments")
+                .and_then(|v| v.as_object())
+                .cloned();
+            let metadata = edit_obj
+                .get("metadata")
+                .and_then(|v| v.as_object())
+                .cloned();
+            let reason = edit_obj
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
+            Some(RefinementEdit {
+                action,
+                kind: Some(kind_val),
+                id: raw_id,
+                title,
+                content,
+                path,
+                reference,
+                arguments,
+                metadata,
+                reason,
+            })
         })
         .collect();
+
     RefinementProposal {
-        summary: string_field("summary", "Refined continual harness state"),
-        rationale: string_field("rationale", ""),
-        expected_outcome: string_field("expectedOutcome", ""),
+        summary,
+        rationale,
+        expected_outcome,
         edits,
     }
 }
@@ -167,10 +550,10 @@ pub fn normalize_refinement_proposal(value: &serde_json::Value) -> RefinementPro
 /// # Errors
 ///
 /// Returns a human-readable error string when the reply's JSON cannot be
-/// extracted or its top level is not an object.
+/// extracted or its top level is not an object or array.
 pub fn parse_proposal(text: &str) -> Result<RefinementProposal, String> {
     let value = extract_json_object(text)?;
-    if !value.is_object() {
+    if !value.is_object() && !value.is_array() {
         return Err("Refiner JSON must be an object".to_string());
     }
     Ok(normalize_refinement_proposal(&value))
@@ -192,6 +575,166 @@ fn slug(raw: &str, fallback: &str) -> String {
     } else {
         truncated
     }
+}
+
+fn resolve_target_id(
+    entries: Option<&std::collections::BTreeMap<String, HarnessEntry>>,
+    edit: &RefinementEdit,
+) -> Option<String> {
+    let entries = entries?;
+    if entries.is_empty() {
+        return None;
+    }
+
+    let record_keys: Vec<&String> = entries.keys().collect();
+    let norm_title = edit.title.as_deref().unwrap_or("").to_lowercase();
+    let norm_content = edit.content.as_deref().unwrap_or("").to_lowercase();
+
+    // 1. Check if an existing entry ID appears in edit.title or edit.content
+    for key in &record_keys {
+        let k_norm = key.to_lowercase();
+        if norm_title.contains(&k_norm) || norm_content.contains(&k_norm) {
+            return Some((*key).clone());
+        }
+        if let Some(entry) = entries.get(*key) {
+            let existing_title = entry.title.to_lowercase();
+            if !existing_title.is_empty()
+                && (norm_title.contains(&existing_title) || existing_title.contains(&norm_title))
+            {
+                return Some((*key).clone());
+            }
+        }
+        let k_words: Vec<&str> = k_norm
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| w.len() >= 3)
+            .collect();
+        let title_words: std::collections::HashSet<&str> = norm_title
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| w.len() >= 3)
+            .collect();
+        let overlap = k_words.iter().filter(|w| title_words.contains(*w)).count();
+        if overlap >= 2 {
+            return Some((*key).clone());
+        }
+    }
+
+    // 2. Check title prefix before version/colon/parenthesis
+    if let Some(title) = &edit.title {
+        let get_title_prefix = |t: &str| -> String {
+            let clean = if let Some(idx) = t.find(']') {
+                &t[idx + 1..]
+            } else if let Some(idx) = t.find(')') {
+                &t[idx + 1..]
+            } else {
+                t
+            };
+            let mut prefix = clean.trim();
+            if let Some(pos) = prefix.find(|c| c == ':' || c == '(') {
+                prefix = &prefix[..pos];
+            }
+            if let Some(v_idx) = prefix.to_lowercase().find(" v") {
+                if prefix[v_idx + 2..]
+                    .chars()
+                    .next()
+                    .map_or(false, |c| c.is_ascii_digit())
+                {
+                    prefix = &prefix[..v_idx];
+                }
+            }
+            prefix
+                .to_lowercase()
+                .chars()
+                .filter(|c| c.is_alphanumeric() || c.is_whitespace())
+                .collect::<String>()
+                .trim()
+                .to_string()
+        };
+
+        let edit_prefix = get_title_prefix(title);
+        if edit_prefix.len() >= 5 {
+            for key in &record_keys {
+                if let Some(entry) = entries.get(*key) {
+                    let entry_prefix = get_title_prefix(&entry.title);
+                    if entry_prefix.len() >= 5
+                        && (edit_prefix == entry_prefix
+                            || edit_prefix.contains(&entry_prefix)
+                            || entry_prefix.contains(&edit_prefix))
+                    {
+                        return Some((*key).clone());
+                    }
+                }
+            }
+        }
+
+        // 3. Significant word overlap between edit title and existing entry title (>= 3 words)
+        let stop_words: std::collections::HashSet<&str> = [
+            "for", "and", "the", "with", "from", "state", "into", "that", "this",
+        ]
+        .into_iter()
+        .collect();
+        let edit_words: std::collections::HashSet<&str> = norm_title
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| w.len() >= 3 && !stop_words.contains(w))
+            .collect();
+
+        let mut best_overlap = 0;
+        let mut best_key = None;
+        for key in &record_keys {
+            if let Some(entry) = entries.get(*key) {
+                let lower_entry_title = entry.title.to_lowercase();
+                let entry_words: Vec<&str> = lower_entry_title
+                    .split(|c: char| !c.is_alphanumeric())
+                    .filter(|w| w.len() >= 3 && !stop_words.contains(w))
+                    .collect();
+                let overlap = entry_words.iter().filter(|w| edit_words.contains(*w)).count();
+                if overlap >= 3 && overlap > best_overlap {
+                    best_overlap = overlap;
+                    best_key = Some((*key).clone());
+                }
+            }
+        }
+        if let Some(k) = best_key {
+            return Some(k);
+        }
+
+        // 4. Path match (if unique)
+        if let Some(path) = &edit.path {
+            let matching: Vec<&String> = record_keys
+                .iter()
+                .filter(|k| entries.get(k.as_str()).map_or(false, |e| &e.path == path))
+                .copied()
+                .collect();
+            if matching.len() == 1 {
+                return Some(matching[0].clone());
+            }
+        }
+
+        // 5. Slug of edit.title matching an existing entry ID
+        let s = slug(title, kind_name(edit.kind.unwrap_or(RefinementKind::Memory)));
+        if entries.contains_key(&s) {
+            return Some(s);
+        }
+
+        // 6. First word of title matching existing entry key
+        let first_word = title
+            .trim()
+            .split(|c: char| c.is_whitespace() || c == ':' || c == ',' || c == '(')
+            .next()
+            .unwrap_or("")
+            .to_lowercase();
+        let cleaned_first = first_word
+            .trim_start_matches(|c| c == '[' || c == '`' || c == '*')
+            .trim_end_matches(|c| c == ']' || c == '`' || c == '*');
+        let cleaned_first = cleaned_first
+            .strip_prefix("local:")
+            .or_else(|| cleaned_first.strip_prefix("global:"))
+            .unwrap_or(cleaned_first);
+        if entries.contains_key(cleaned_first) {
+            return Some(cleaned_first.to_string());
+        }
+    }
+
+    None
 }
 
 /// Validation errors mirror the TS messages exactly.
@@ -218,7 +761,7 @@ fn validate_edit(edit: &RefinementEdit, computed_id: Option<&str>) -> Option<Str
     {
         return Some("base system prompt is not editable".to_string());
     }
-    if action != RefinementAction::Create && edit.id.is_none() {
+    if action != RefinementAction::Create && computed_id.is_none() {
         return Some(format!("{action:?} requires id").to_lowercase());
     }
     if action != RefinementAction::Delete && (edit.title.is_none() || edit.content.is_none()) {
@@ -324,18 +867,25 @@ pub fn apply_refinement_proposal(
     let mut proposal_modified_keys: std::collections::HashSet<String> =
         std::collections::HashSet::default();
     for edit in &proposal.edits {
-        let computed_id = edit.id.clone().or_else(|| {
-            (edit.action == Some(RefinementAction::Create)).then(|| {
-                slug(
+        let kind_opt = edit.kind;
+        let resolved_id = match (&edit.id, edit.action) {
+            (Some(id_str), _) if !id_str.trim().is_empty() => Some(id_str.trim().to_string()),
+            (_, Some(RefinementAction::Create)) => {
+                Some(slug(
                     edit.title
                         .as_deref()
-                        .unwrap_or(kind_name(edit.kind.unwrap_or(RefinementKind::Memory))),
-                    kind_name(edit.kind.unwrap_or(RefinementKind::Memory)),
-                )
-            })
-        });
-        let id = computed_id.clone().unwrap_or_default();
-        let validation_error = validate_edit(edit, computed_id.as_deref());
+                        .unwrap_or(kind_name(kind_opt.unwrap_or(RefinementKind::Memory))),
+                    kind_name(kind_opt.unwrap_or(RefinementKind::Memory)),
+                ))
+            }
+            (_, _) => {
+                let kind_val = kind_opt.unwrap_or(RefinementKind::Memory);
+                let entries_map = state.entries.get(&kind_val);
+                resolve_target_id(entries_map, edit)
+            }
+        };
+        let id = resolved_id.clone().unwrap_or_default();
+        let validation_error = validate_edit(edit, resolved_id.as_deref());
         let Some(kind) = edit.kind else {
             let mut row = AppliedRefinementEdit::planned(
                 edit,
@@ -891,6 +1441,168 @@ mod tests {
         assert!(rolled.applied_edits[0].applied);
         // r1 created m1 with no before snapshot, so the rollback deletes it.
         assert!(!state.entries[&RefinementKind::Memory].contains_key("m1"));
+    }
+
+    #[test]
+    fn resolves_update_id_from_target_property_or_rationale_when_id_omitted() {
+        let mut state = empty_harness_state();
+        let init_prop = RefinementProposal {
+            summary: "Initial create".to_string(),
+            rationale: String::new(),
+            expected_outcome: String::new(),
+            edits: vec![create_memory_edit(
+                "manualbook_recheck_inflight",
+                "Manual-book audit v8",
+                "Status v8",
+            )],
+        };
+        apply_refinement_proposal(
+            &mut state,
+            &init_prop,
+            ApplyOptions {
+                id: "refine_init".to_string(),
+                rollback_of: None,
+                scope: None,
+                baseline_state: None,
+            },
+        );
+
+        // 1. Model put id in rationale
+        let prop1 = normalize_refinement_proposal(&serde_json::json!({
+            "summary": "Refined state",
+            "rationale": "Update manualbook_recheck_inflight to v9 recording the completed full-suite capture",
+            "edits": [
+                {
+                    "action": "update",
+                    "kind": "memory",
+                    "title": "Manual-book audit v9",
+                    "content": "Status v9 verified"
+                }
+            ]
+        }));
+        let res1 = apply_refinement_proposal(
+            &mut state,
+            &prop1,
+            ApplyOptions {
+                id: "refine_rat_match".to_string(),
+                rollback_of: None,
+                scope: None,
+                baseline_state: None,
+            },
+        );
+        assert_eq!(res1.applied_edits.len(), 1);
+        assert!(res1.applied_edits[0].applied);
+        assert_eq!(res1.applied_edits[0].id, "manualbook_recheck_inflight");
+        assert_eq!(
+            state.entries[&RefinementKind::Memory]["manualbook_recheck_inflight"].content,
+            "Status v9 verified"
+        );
+
+        // 2. Model put id in target property
+        let prop2 = normalize_refinement_proposal(&serde_json::json!({
+            "edits": [
+                {
+                    "action": "update",
+                    "kind": "memory",
+                    "target": "manualbook_recheck_inflight",
+                    "title": "Manual-book audit v10",
+                    "content": "Status v10 verified"
+                }
+            ]
+        }));
+        let res2 = apply_refinement_proposal(
+            &mut state,
+            &prop2,
+            ApplyOptions {
+                id: "refine_target_match".to_string(),
+                rollback_of: None,
+                scope: None,
+                baseline_state: None,
+            },
+        );
+        assert_eq!(res2.applied_edits.len(), 1);
+        assert!(res2.applied_edits[0].applied);
+        assert_eq!(res2.applied_edits[0].id, "manualbook_recheck_inflight");
+
+        // 3. Model wrote update with backtick ID in reason
+        let prop3 = normalize_refinement_proposal(&serde_json::json!({
+            "edits": [
+                {
+                    "action": "update",
+                    "kind": "memory",
+                    "reason": "Updating `manualbook_recheck_inflight` with latest verification findings",
+                    "title": "Manual-book audit v11",
+                    "content": "Status v11 verified"
+                }
+            ]
+        }));
+        let res3 = apply_refinement_proposal(
+            &mut state,
+            &prop3,
+            ApplyOptions {
+                id: "refine_reason_backtick_match".to_string(),
+                rollback_of: None,
+                scope: None,
+                baseline_state: None,
+            },
+        );
+        assert_eq!(res3.applied_edits.len(), 1);
+        assert!(res3.applied_edits[0].applied);
+        assert_eq!(res3.applied_edits[0].id, "manualbook_recheck_inflight");
+
+        // 4. Model put bracket prefix in title
+        let prop4 = normalize_refinement_proposal(&serde_json::json!({
+            "edits": [
+                {
+                    "action": "update",
+                    "kind": "memory",
+                    "title": "[local:manualbook_recheck_inflight] Manual-book audit v12",
+                    "content": "Status v12 verified"
+                }
+            ]
+        }));
+        let res4 = apply_refinement_proposal(
+            &mut state,
+            &prop4,
+            ApplyOptions {
+                id: "refine_title_bracket_match".to_string(),
+                rollback_of: None,
+                scope: None,
+                baseline_state: None,
+            },
+        );
+        assert_eq!(res4.applied_edits.len(), 1);
+        assert!(res4.applied_edits[0].applied);
+        assert_eq!(res4.applied_edits[0].id, "manualbook_recheck_inflight");
+
+        // 5. Smart resolution: omitted ID but title prefix and word overlap matches existing entry
+        let prop5 = normalize_refinement_proposal(&serde_json::json!({
+            "edits": [
+                {
+                    "action": "update",
+                    "kind": "memory",
+                    "title": "Manual-book audit v13",
+                    "content": "Status v13 verified"
+                }
+            ]
+        }));
+        let res5 = apply_refinement_proposal(
+            &mut state,
+            &prop5,
+            ApplyOptions {
+                id: "refine_smart_prefix_match".to_string(),
+                rollback_of: None,
+                scope: None,
+                baseline_state: None,
+            },
+        );
+        assert_eq!(res5.applied_edits.len(), 1);
+        assert!(res5.applied_edits[0].applied);
+        assert_eq!(res5.applied_edits[0].id, "manualbook_recheck_inflight");
+        assert_eq!(
+            state.entries[&RefinementKind::Memory]["manualbook_recheck_inflight"].content,
+            "Status v13 verified"
+        );
     }
 
     #[test]

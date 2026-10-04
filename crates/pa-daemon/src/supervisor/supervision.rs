@@ -446,7 +446,22 @@ impl Supervisor {
             )
         };
 
-        let executable = std::env::current_exe().context("resolve pa-daemon executable")?;
+        let mut executable = std::env::current_exe().context("resolve pa-daemon executable")?;
+        let exe_str = executable.to_string_lossy().to_string();
+        if let Some(clean) = exe_str.strip_suffix(" (deleted)") {
+            let clean_path = std::path::PathBuf::from(clean);
+            if clean_path.exists() {
+                executable = clean_path;
+            }
+        }
+        if !executable.exists() {
+            if let Ok(home) = std::env::var("HOME") {
+                let candidate = std::path::PathBuf::from(home).join(".local").join("bin").join("prime-agent");
+                if candidate.exists() {
+                    executable = candidate;
+                }
+            }
+        }
         let stderr_log_path =
             crate::worker_stderr::log_path(&self.options.agent_dir, &resident.worker_id);
         let stderr_log = crate::worker_stderr::open_for_spawn(&stderr_log_path)?;

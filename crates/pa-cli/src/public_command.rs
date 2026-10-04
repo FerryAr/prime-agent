@@ -74,7 +74,7 @@ fn handled() -> PublicCommandResult {
 
 /// A handled invocation whose driver already printed everything, with its own
 /// process exit code (shutdown failures exit 1).
-fn handled_with_exit(exit_code: i32) -> PublicCommandResult {
+pub(crate) fn handled_with_exit(exit_code: i32) -> PublicCommandResult {
     PublicCommandResult {
         handled: true,
         args: vec![],
@@ -86,7 +86,7 @@ fn handled_with_exit(exit_code: i32) -> PublicCommandResult {
 
 /// A handled invocation whose `fail()` branch already printed an error: the
 /// exit code is 1, matching `process.exitCode = 1` in the TS `fail` helper.
-fn handled_failed() -> PublicCommandResult {
+pub(crate) fn handled_failed() -> PublicCommandResult {
     PublicCommandResult {
         handled: true,
         args: vec![],
@@ -145,6 +145,9 @@ pub fn handle_public_command(args: &[String]) -> PublicCommandResult {
 
     let rest: Vec<String> = args[1..].to_vec();
     match command {
+        "api" => crate::api_command::run_api(&rest),
+        "telegram" => crate::telegram_command::run_telegram(&rest),
+        "web" => crate::web_command::run_web(&rest),
         "agents" => PublicCommandResult {
             handled: false,
             args: rest,

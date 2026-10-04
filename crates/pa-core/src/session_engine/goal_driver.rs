@@ -316,6 +316,7 @@ impl GoalDriver {
             goal_id: Some(uuid::Uuid::new_v4().to_string()),
             objective: Some(objective),
             token_budget: budget,
+            max_turns: None,
             tokens_used: 0,
             time_used_seconds: 0,
             continuations_used: 0,
@@ -435,12 +436,20 @@ impl GoalDriver {
         };
         let budget_reached = next_goal
             .token_budget
-            .is_some_and(|budget| next_goal.tokens_used >= budget);
+            .is_some_and(|budget| next_goal.tokens_used >= budget)
+            || next_goal
+                .max_turns
+                .is_some_and(|max| next_goal.continuations_used >= max);
         let outcome = if budget_reached {
-            let token_budget = next_goal.token_budget;
-            let budget_reason = token_budget
-                .map(|budget| format!("Reached {budget} token goal budget"))
-                .unwrap_or_default();
+            let budget_reason = match (next_goal.token_budget, next_goal.max_turns) {
+                (Some(budget), _) if next_goal.tokens_used >= budget => {
+                    format!("Reached {budget} token goal budget")
+                }
+                (_, Some(max)) if next_goal.continuations_used >= max => {
+                    format!("Reached {max} turn limit")
+                }
+                _ => "Goal limit reached".to_string(),
+            };
             self.set_state(
                 session,
                 GoalState {

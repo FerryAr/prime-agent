@@ -495,6 +495,17 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             crate::session_engine::tool_bridge::ToolDefinitionBridge::new(definition),
         ));
     }
+
+    // Register native lean-ctx tools (ctx_shell, ctx_read, ctx_search, ctx_skill_read) if lean-ctx is installed
+    let cwd_str = cwd.to_string_lossy().to_string();
+    for lean_def in crate::tools::lean_ctx::create_lean_ctx_tools(&cwd_str) {
+        if !tools.iter().any(|tool| tool.name() == lean_def.name) {
+            tools.push(Arc::new(
+                crate::session_engine::tool_bridge::ToolDefinitionBridge::new(lean_def),
+            ));
+        }
+    }
+
     let active_tool_names: Vec<String> = tools.iter().map(|tool| tool.name().to_string()).collect();
 
     // The TS prewarm (agent-session.ts `_buildRuntime`, behind

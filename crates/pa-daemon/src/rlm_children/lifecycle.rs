@@ -390,6 +390,7 @@ impl SupervisorChildSessionsInner {
                 record.answer_preview = answer;
                 record.answer_captured = true;
             }
+            self.notify_child_update(&record);
         }
     }
 
@@ -490,6 +491,7 @@ impl SupervisorChildSessionsInner {
             } else {
                 unreachable_polls += 1;
                 if unreachable_polls >= WATCH_MAX_UNREACHABLE_POLLS {
+
                     // A dead child keeps whatever rows its file already
                     // holds; capture them before the terminal notice.
                     self.emit_child_usage(record).await;
@@ -631,6 +633,7 @@ impl SupervisorChildSessionsInner {
                 now_ms(),
             );
             record.error = Some(error);
+            self.notify_child_update(&record);
             message
         };
         // TS records a failed child's return too (`recordChildReturned` in
