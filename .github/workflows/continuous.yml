@@ -34,6 +34,7 @@ jobs:
   # builds as before. PR runs and tag-driven releases (release.yml) are
   # unaffected — this workflow only fires on branch pushes.
   staleness:
+    if: github.repository == 'PrimeIntellect-ai/prime-agent'
     # After `deny`: the tip lookup runs as late in the DAG as the builds
     # allow, so a push that lands while `deny` runs is still caught (the
     # check-then-build window shrinks to the build's own startup).
@@ -72,6 +73,7 @@ jobs:
   # anything new. SEAM: pin the advisory-DB snapshot (or vendor it) when
   # the channel goes public.
   deny:
+    if: github.repository == 'PrimeIntellect-ai/prime-agent'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -86,7 +88,7 @@ jobs:
   # downloadable branch-channel binaries.
   build-gnu:
     needs: [deny, staleness]
-    if: needs.staleness.outputs.superseded != 'true'
+    if: github.repository == 'PrimeIntellect-ai/prime-agent' && needs.staleness.outputs.superseded != 'true'
     name: build-${{ matrix.target }}
     runs-on: ${{ matrix.runs-on }}
     # GLIBC 2.35 build baseline: artifacts built on the ubuntu-24.04 runner
@@ -222,7 +224,7 @@ jobs:
 
   build-darwin:
     needs: [deny, staleness]
-    if: needs.staleness.outputs.superseded != 'true'
+    if: github.repository == 'PrimeIntellect-ai/prime-agent' && needs.staleness.outputs.superseded != 'true'
     name: build-${{ matrix.target }}
     runs-on: ${{ matrix.runs-on }}
     permissions:

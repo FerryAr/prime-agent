@@ -169,6 +169,7 @@ jobs:
   # not the step.
   trust:
     name: contributor trust
+    if: github.repository == 'PrimeIntellect-ai/prime-agent'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:

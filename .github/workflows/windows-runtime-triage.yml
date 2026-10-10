@@ -61,6 +61,7 @@ jobs:
   # they bill a windows runner minute.
   trust:
     name: contributor trust
+    if: github.repository == 'PrimeIntellect-ai/prime-agent'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
@@ -140,7 +141,7 @@ jobs:
   # on-demand/nightly arm stays, but it must not bill on every PR.
   windows-battery:
     name: windows battery (on-demand)
-    if: github.event_name != 'pull_request'
+    if: github.repository == 'PrimeIntellect-ai/prime-agent' && github.event_name != 'pull_request'
     runs-on: windows-latest
     # GitHub-hosted jobs stop at six hours whatever this says, so 360 is
     # the real maximum. The full pa-cli e2e set alone runs past it on this

@@ -52,6 +52,7 @@ env:
 
 jobs:
   tag-check:
+    if: github.repository == 'PrimeIntellect-ai/prime-agent'
     runs-on: ubuntu-latest
     permissions:
       contents: read

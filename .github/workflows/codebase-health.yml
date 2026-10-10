@@ -11,6 +11,7 @@ jobs:
   # `allowed` output the loc job keys on.
   trust:
     name: contributor trust
+    if: github.repository == 'PrimeIntellect-ai/prime-agent'
     runs-on: ubuntu-latest
     outputs:
       # merge_group auto-allows: the queued candidate already passed the
