@@ -1,3 +1,6 @@
+[build]
+rustc-wrapper = "/usr/bin/sccache"
+
 # Every cargo test/run in this repo, any profile and any crate, opts out of
 # product telemetry. Cargo's [env] never overrides a variable that is
 # already set, so a test that needs it can still set its own value.

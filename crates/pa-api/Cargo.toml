@@ -1,0 +1,26 @@
+[package]
+name = "pa-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "High-performance native Rust REST, SSE, and WebSocket API gateway for Prime Agent."
+
+[dependencies]
+pa-types = { path = "../pa-types" }
+pa-core = { path = "../pa-core" }
+pa-daemon = { path = "../pa-daemon" }
+axum = { version = "0.8", features = ["ws"] }
+tower-http = { version = "0.6", features = ["cors", "fs"] }
+tokio = { workspace = true }
+tokio-util = "0.7"
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+uuid = { version = "1", features = ["v4"] }
+tracing = { workspace = true }
+portable-pty = "0.9"
+async-stream = "0.3"
+futures = "0.3"
+rust-embed = "8"
+sha2 = "0.10"
+mime_guess = "2.0"

@@ -15,6 +15,7 @@
 
 // Internal ported modules are crate-private: the only public API is the
 // runtime boundary below (see crates/pa-cli/README.md).
+pub(crate) mod api_command;
 pub(crate) mod args;
 pub(crate) mod client_settings;
 pub(crate) mod client_traces;
@@ -49,8 +50,10 @@ pub(crate) mod self_update;
 pub(crate) mod session_export;
 pub(crate) mod sessions_table_format;
 pub(crate) mod subscription_login;
+pub(crate) mod telegram_command;
 pub(crate) mod telemetry_notice;
 pub(crate) mod traces_login;
+pub(crate) mod web_command;
 
 /// The runtime boundary: everything a mode-runner crate implements to plug
 /// into the `prime-agent` binary, plus the entry point that drives it.
