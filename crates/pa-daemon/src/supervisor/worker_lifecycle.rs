@@ -139,6 +139,15 @@ impl Supervisor {
             .and_then(Value::as_str)
             .map(str::to_string)
             .or_else(|| {
+                // If opening/resuming an existing session transcript without explicit cwd,
+                // prioritize the recorded cwd from the session header rather than daemon's cwd!
+                session_path.as_deref().and_then(|sp| {
+                    crate::session_store::read_session_header(std::path::Path::new(sp))
+                        .map(|header| header.cwd)
+                        .filter(|c| !c.trim().is_empty())
+                })
+            })
+            .or_else(|| {
                 std::env::current_dir()
                     .ok()
                     .map(|p| p.to_string_lossy().to_string())

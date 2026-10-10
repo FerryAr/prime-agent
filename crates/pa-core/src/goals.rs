@@ -40,6 +40,8 @@ pub struct SerializedGoal {
     pub status: GoalStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token_budget: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_turns: Option<u64>,
     pub tokens_used: u64,
     pub time_used_seconds: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -248,6 +250,7 @@ pub fn goal_host_response(goal: &GoalState, include_completion_report: bool) -> 
         objective,
         status: goal.status,
         token_budget: goal.token_budget,
+        max_turns: goal.max_turns,
         tokens_used: goal.tokens_used,
         time_used_seconds: goal.time_used_seconds,
         created_at: goal.created_at,
@@ -411,6 +414,7 @@ mod tests {
             goal_id: Some("g1".to_string()),
             objective: Some("ship the feature".to_string()),
             token_budget: Some(1000),
+            max_turns: None,
             tokens_used: 400,
             time_used_seconds: 120,
             continuations_used: 3,

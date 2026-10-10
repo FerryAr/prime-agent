@@ -522,7 +522,25 @@ impl Worker {
         // and a std MutexGuard must never ride an await point.
         let (summary, rlm_depth) = {
             let (mut core, inputs) = self.summary_inputs();
-            core.cwd = cwd;
+            // If opening an existing session file without an explicit client cwd,
+            // prioritize the session header's recorded cwd so the workspace never drifts
+            // to the supervisor daemon's launch directory!
+            if opened_existing_session {
+                if let Some(recorded_cwd) = store.header.cwd.clone().into() {
+                    let s: String = recorded_cwd;
+                    if !s.trim().is_empty() && std::path::Path::new(&s).is_dir() {
+                        core.cwd = s;
+                    } else {
+                        core.cwd = cwd;
+                    }
+                } else {
+                    core.cwd = cwd;
+                }
+            } else {
+                core.cwd = cwd;
+            }
+            let _ = std::env::set_current_dir(&core.cwd);
+            self.engine.set_cwd(std::path::PathBuf::from(&core.cwd));
             core.steering = steering;
             core.follow_up = follow_up;
             core.store = Some(store);
