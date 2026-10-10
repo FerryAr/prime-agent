@@ -209,6 +209,15 @@ pub fn system_prompt_breakdown(options: &BuildSystemPromptOptions) -> SystemProm
         ));
     }
 
+    if tools.contains(&"ctx_shell") || tools.contains(&"ctx_read") {
+        let lean_prompt = "# CRITICAL POLICY: Native lean-ctx Tools & Token Optimization\n\nPRECEDENCE OVER BASE RULES: You have direct access to native `ctx_*` model tools. These tools SUPERSEDE the general rules in `usage.md` that suggest using Python or `bash()` for file operations and shell execution. You MUST call native `ctx_*` tools directly as your primary tools.\n\nMANDATORY TOOL MAPPING:\n• Shell commands / builds / git / scripts → call `ctx_shell(command=...)` DIRECTLY. Do NOT use `bash(...)` in `ipython`.\n• Read files → call `ctx_read(path=..., mode=\"signatures\"|\"full\"|\"lines:N-M\")` DIRECTLY. Do NOT read files via Python `open()` or `cat` in `ipython`.\n• Codebase orientation / understanding → call `ctx_compose(task=...)` (call FIRST) or `ctx_overview()`. Do NOT chain multi-file reads.\n• Search code / grep → call `ctx_search(pattern=..., path=...)` DIRECTLY. Do NOT grep via `ipython`.\n• Directory listing / structure → call `ctx_tree(path=...)` or `ctx_glob(pattern=...)` DIRECTLY.\n• Code graph / call hierarchy → call `ctx_callgraph` or `ctx_graph` DIRECTLY.\n• Safe file editing → use `ctx_patch` (for anchored surgical edits) or `edit.run(...)`.\n• Persistent project memory → use `ctx_knowledge` or `ctx_session`.\n\nSELF-CORRECT RULE: The moment you reach for `bash(...)` in `ipython` or Python code for reading/searching files, STOP and call the corresponding `ctx_*` native tool instead. Reserve `ipython` ONLY for running Python scripts, data processing, subagent delegation (`rlm.spawn`), and continual harness operations (`await refine.run()`).";
+        segments.push(PromptSegment::dynamic_segment(
+            "lean-ctx-routing",
+            "lean-ctx token optimization tools",
+            lean_prompt.to_string(),
+        ));
+    }
+
     let guidelines = options
         .prompt_guidelines
         .as_deref()
